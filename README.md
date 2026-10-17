@@ -46,16 +46,42 @@ Semantics follow REBOL: ordered choice (`|`) with backtracking, greedy repeats, 
 | `into r` | `Into(r)` | descends into a nested block |
 | `quote word` | `Lit(new Word("word"))` | |
 | `name:` `:name` | `Mark("name")` `Seek("name")` | save / restore position |
-| `break` | `Break` | leaves the enclosing `some`/`any`/`opt` |
+| `break` | `Break` | leaves the enclosing `some`/`any`/`opt`, succeeding |
+| `reject` | `Reject` | leaves the enclosing `some`/`any`/`opt`, failing it; outside a loop it is `fail` |
+| `insert v` | `Insert(v)` | inserts at the position and moves past it |
+| `change r v` | `Change(r, v)` | replaces what `r` matched, then moves past the new value |
+| `remove r` | `Remove(r)` | deletes what `r` matched |
+| `collect v r` | `Collect("v", r)` | list of everything `r` keeps, stored in `Vars` |
+| `keep r` | `Keep(r)` | appends the match to the enclosing `collect` |
 | `(code)` | `Do(ctx => ...)` | text form binds by name: `(@name)` |
 | `digit alpha alnum upper lower space newline tab` | `Digit` ... | string mode |
 | `integer! decimal! string! word! block!` | `Integer` ... | block mode |
 | bare word | `Ref("name")` | looks up the rule table passed to `Parse`; recursion works |
 
+## Editing and collecting
+
+`insert`, `change` and `remove` edit a private copy of the input; your string or list is never modified. Read the result from `ParseResult.Output` (a string, or a list for block input).
+
+```csharp
+var r = Parser.Parse("a-b-c", Dialect.Read("any [change \"-\" \"+\" | skip]"));
+r.Output;   // "a+b+c"
+```
+
+A value is a string, char or integer literal, or a variable name set earlier by `copy`/`set` (`copy w to end insert w`). The fluent forms also take a `Func<Ctx, object?>`. In block mode a value is inserted as one item, and edits inside `into` are written back to the parent. Marks saved before an edit are not adjusted.
+
+`collect` stores a list in `Vars`: strings in text mode, and in block mode the item itself for a one-item match or a list for a longer one. A `keep` inside a branch that later fails is dropped; captures, actions and edits are not.
+
+## Case-insensitive mode
+
+Literal strings, chars and words match regardless of case with `Parser.Parse(input, rule, ignoreCase: true)`. Character sets such as `upper` stay case-sensitive. Matching is case-sensitive by default, whereas REBOL's is case-insensitive by default.
+
 ## Differences from REBOL
 
 - Paren code is not evaluated. Actions are C# delegates bound with `(@name)`.
-- Not implemented: `reject`, `change`, `insert`, `remove`, `collect`/`keep`, case-insensitive mode, `to`/`thru` on non-rule datatype shorthands. Rules never mutate the input.
+- Matching is case-sensitive unless you pass `ignoreCase: true`.
+- Edits apply to a copy of the input and come back in `ParseResult.Output`.
+- `keep` takes a rule only: there is no `keep pick` or `keep (expr)`.
+- Not implemented: `to`/`thru` on non-rule datatype shorthands.
 - Backtracking is plain recursive descent with no memoization, so pathological grammars can be slow.
 - Variables set inside an alternative that later fails are not rolled back (REBOL behaves the same way).
 

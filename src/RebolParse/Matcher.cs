@@ -10,42 +10,66 @@ public sealed class Ctx
     /// <summary>Current position in the series being matched when an action runs.</summary>
     public int Pos { get; internal set; }
     internal bool BreakRequested;
+    internal bool RejectRequested;
+    internal int LoopDepth;
+    internal bool IgnoreCase;
+    internal Stack<List<object>> Collected { get; } = new();
 }
 
-public sealed record ParseResult(bool Matched, int Position, IReadOnlyDictionary<string, object?> Vars)
+/// <param name="Matched">Whether the rule matched (and consumed all input, unless parsing partially).</param>
+/// <param name="Position">Where matching stopped.</param>
+/// <param name="Vars">Values stored by <c>copy</c>, <c>set</c> and <c>collect</c>.</param>
+/// <param name="Output">The input after any <c>insert</c>/<c>change</c>/<c>remove</c> edits: a string, or a list for block input. The caller's input is never modified.</param>
+public sealed record ParseResult(bool Matched, int Position, IReadOnlyDictionary<string, object?> Vars, object? Output = null)
 {
     public static implicit operator bool(ParseResult r) => r.Matched;
 }
 
 public static class Parser
 {
-    /// <summary>Parse a string. By default the rule must consume all input, as in REBOL.</summary>
-    public static ParseResult Parse(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null, bool partial = false) =>
-        Run(new StringSeries(input), rule, rules, partial);
+    /// <summary>
+    /// Parse a string. By default the rule must consume all input, as in REBOL.
+    /// <paramref name="ignoreCase"/> makes literal strings and chars match regardless of case.
+    /// </summary>
+    public static ParseResult Parse(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
+        bool partial = false, bool ignoreCase = false) =>
+        Run(new StringSeries(input, ignoreCase), rule, rules, partial, ignoreCase);
 
     /// <summary>Parse a block of values (chars, strings, numbers, <see cref="Word"/>, nested lists).</summary>
-    public static ParseResult Parse(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null, bool partial = false) =>
-        Run(new BlockSeries(input), rule, rules, partial);
+    public static ParseResult Parse(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
+        bool partial = false, bool ignoreCase = false) =>
+        Run(new BlockSeries(input, ignoreCase), rule, rules, partial, ignoreCase);
 
-    private static ParseResult Run(ISeries series, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial)
+    private static ParseResult Run(ISeries series, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
     {
-        var ctx = new Ctx { Rules = rules ?? new Dictionary<string, Rule>() };
+        var ctx = new Ctx { Rules = rules ?? new Dictionary<string, Rule>(), IgnoreCase = ignoreCase };
         var pos = 0;
         var ok = new Matcher(series, ctx).Match(rule, ref pos);
-        return new ParseResult(ok && (partial || pos == series.Length), pos, ctx.Vars);
+        return new ParseResult(ok && (partial || pos == series.Length), pos, ctx.Vars, series.ToResult());
     }
 }
 
 internal sealed class Matcher(ISeries s, Ctx ctx)
 {
-    /// <summary>Match <paramref name="rule"/> at <paramref name="pos"/>. On failure pos is left unchanged.</summary>
+    /// <summary>
+    /// Match <paramref name="rule"/> at <paramref name="pos"/>. On failure pos is left unchanged, and any
+    /// break/reject or <c>keep</c> from the failed attempt is dropped. Captures, actions and edits are not undone.
+    /// </summary>
     public bool Match(Rule rule, ref int pos)
     {
         var start = pos;
         var wasBreaking = ctx.BreakRequested;
+        var wasRejecting = ctx.RejectRequested;
+        var kept = ctx.Collected.Count > 0 ? ctx.Collected.Peek().Count : 0;
         if (Step(rule, ref pos)) return true;
         pos = start;
-        ctx.BreakRequested = wasBreaking; // a break inside a failed branch is abandoned with it
+        ctx.BreakRequested = wasBreaking;
+        ctx.RejectRequested = wasRejecting;
+        if (ctx.Collected.Count > 0)
+        {
+            var top = ctx.Collected.Peek();
+            if (top.Count > kept) top.RemoveRange(kept, top.Count - kept);
+        }
         return false;
     }
 
@@ -79,6 +103,46 @@ internal sealed class Matcher(ISeries s, Ctx ctx)
 
             case BreakRule:
                 ctx.BreakRequested = true;
+                return true;
+
+            case RejectRule:
+                if (ctx.LoopDepth == 0) return false;
+                ctx.RejectRequested = true;
+                return true;
+
+            case Insert ins:
+                pos += s.Insert(pos, ins.Value(ctx));
+                return true;
+
+            case Change chg:
+                var chStart = pos;
+                if (!Match(chg.Body, ref pos)) return false;
+                s.Remove(chStart, pos);
+                pos = chStart + s.Insert(chStart, chg.Value(ctx));
+                return true;
+
+            case Remove rem:
+                var rmStart = pos;
+                if (!Match(rem.Body, ref pos)) return false;
+                s.Remove(rmStart, pos);
+                pos = rmStart;
+                return true;
+
+            case Collect col:
+                var list = new List<object>();
+                ctx.Collected.Push(list);
+                var collected = Match(col.Body, ref pos);
+                ctx.Collected.Pop();
+                if (!collected) return false;
+                ctx.Vars[col.Var] = list;
+                return true;
+
+            case Keep keep:
+                if (ctx.Collected.Count == 0) throw new InvalidOperationException("'keep' used outside 'collect'.");
+                var kStart = pos;
+                if (!Match(keep.Body, ref pos)) return false;
+                var span = s.Slice(kStart, pos);
+                ctx.Collected.Peek().Add(span is IReadOnlyList<object> { Count: 1 } one ? one[0] : span);
                 return true;
 
             case Item it:
@@ -117,9 +181,15 @@ internal sealed class Matcher(ISeries s, Ctx ctx)
 
             case Into into:
                 if (pos >= s.Length || s[pos] is not IReadOnlyList<object> block) return false;
-                var inner = new Matcher(new BlockSeries(block), ctx);
+                var innerSeries = new BlockSeries(block, ctx.IgnoreCase);
+                var inner = new Matcher(innerSeries, ctx);
                 var ip = 0;
-                if (!inner.Match(into.Body, ref ip) || ip != block.Count) return false;
+                if (!inner.Match(into.Body, ref ip) || ip != innerSeries.Length) return false;
+                if (innerSeries.Modified)
+                {
+                    s.Remove(pos, pos + 1);
+                    s.Insert(pos, innerSeries.ToResult());
+                }
                 pos++;
                 return true;
 
@@ -151,16 +221,22 @@ internal sealed class Matcher(ISeries s, Ctx ctx)
     private bool Loop(Repeat rep, ref int pos)
     {
         var count = 0;
+        var rejected = false;
+        ctx.LoopDepth++;
         while (rep.Max < 0 || count < rep.Max)
         {
             var before = pos;
+            var lengthBefore = s.Length;
             ctx.BreakRequested = false; // drop a stale break from outside this loop or a failed branch
+            ctx.RejectRequested = false;
             if (!Match(rep.Body, ref pos)) break;
             count++;
+            if (ctx.RejectRequested) { ctx.RejectRequested = false; rejected = true; break; }
             if (ctx.BreakRequested) { ctx.BreakRequested = false; break; }
-            if (pos == before) break; // zero-width match: stop to avoid looping forever
+            if (pos == before && s.Length == lengthBefore) break; // no progress: stop to avoid looping forever
         }
-        return count >= rep.Min;
+        ctx.LoopDepth--;
+        return !rejected && count >= rep.Min;
     }
 
     /// <summary>Find the first position at or after <paramref name="pos"/> where the rule matches.</summary>

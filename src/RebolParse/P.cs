@@ -9,6 +9,7 @@ public static class P
     public static readonly Rule None = new Seq([]);
     public static readonly Rule Fail = new FailRule();
     public static readonly Rule Break = new BreakRule();
+    public static readonly Rule Reject = new RejectRule();
 
     public static Rule Some(Rule r) => new Repeat(r, 1, -1);
     public static Rule Any(Rule r) => new Repeat(r, 0, -1);
@@ -26,6 +27,13 @@ public static class P
     public static Rule Mark(string name) => new Mark(name);
     public static Rule Seek(string name) => new Seek(name);
     public static Rule Do(Action<Ctx> action) => new Act(action);
+    public static Rule Insert(object? value) => new Insert(_ => value);
+    public static Rule Insert(Func<Ctx, object?> value) => new Insert(value);
+    public static Rule Change(Rule r, object? value) => new Change(r, _ => value);
+    public static Rule Change(Rule r, Func<Ctx, object?> value) => new Change(r, value);
+    public static Rule Remove(Rule r) => new Remove(r);
+    public static Rule Collect(string name, Rule r) => new Collect(name, r);
+    public static Rule Keep(Rule r) => new Keep(r);
     public static Rule Lit(object value) => new Lit(value);
     public static Rule Choice(params Rule[] alts) => new Alt(alts);
     public static Rule Seq(params Rule[] items) => new Seq(items);

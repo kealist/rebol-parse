@@ -12,7 +12,7 @@ public static class Dialect
 {
     private static readonly Dictionary<string, Rule> Builtins = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["skip"] = P.Skip, ["end"] = P.End, ["none"] = P.None, ["fail"] = P.Fail, ["break"] = P.Break,
+        ["skip"] = P.Skip, ["end"] = P.End, ["none"] = P.None, ["fail"] = P.Fail, ["break"] = P.Break, ["reject"] = P.Reject,
         ["digit"] = P.Digit, ["alpha"] = P.Alpha, ["alnum"] = P.AlphaNum, ["upper"] = P.Upper,
         ["lower"] = P.Lower, ["space"] = P.Space, ["newline"] = P.Newline, ["tab"] = P.Tab,
         ["integer!"] = P.Integer, ["decimal!"] = P.Decimal, ["string!"] = P.Str,
@@ -99,6 +99,13 @@ public static class Dialect
             case "quote": return ReadQuoted(t, ref i);
             case "copy": return new Copy(ReadVarName(t, ref i, "copy"), ReadItem(t, ref i, acts));
             case "set": return new Set(ReadVarName(t, ref i, "set"), ReadItem(t, ref i, acts));
+            case "insert": return new Insert(ReadValue(t, ref i, "insert"));
+            case "remove": return new Remove(ReadItem(t, ref i, acts));
+            case "keep": return new Keep(ReadItem(t, ref i, acts));
+            case "collect": return new Collect(ReadVarName(t, ref i, "collect"), ReadItem(t, ref i, acts));
+            case "change":
+                var body = ReadItem(t, ref i, acts);
+                return new Change(body, ReadValue(t, ref i, "change"));
         }
         return Builtins.TryGetValue(w, out var b) ? b : new Ref(w);
     }
@@ -115,6 +122,25 @@ public static class Dialect
             K.Word => new Lit(new Word(v.Text)),
             _ => throw new FormatException($"'quote' cannot take '{v.Text}'."),
         };
+    }
+
+    /// <summary>A literal (string, char, integer) or a word naming a captured variable, read when the rule runs.</summary>
+    private static Func<Ctx, object?> ReadValue(List<Token> t, ref int i, string kw)
+    {
+        if (i >= t.Count) throw new FormatException($"'{kw}' needs a value.");
+        var v = t[i++];
+        switch (v.Kind)
+        {
+            case K.Str: { var str = v.Text; return _ => str; }
+            case K.Char: { var ch = v.Text[0]; return _ => ch; }
+            case K.Int: { var n = int.Parse(v.Text); return _ => n; }
+            case K.Word:
+                var name = v.Text;
+                return ctx => ctx.Vars.TryGetValue(name, out var val)
+                    ? val
+                    : throw new KeyNotFoundException($"Undefined variable '{name}'.");
+            default: throw new FormatException($"'{kw}' cannot take '{v.Text}'.");
+        }
     }
 
     private static string ReadVarName(List<Token> t, ref int i, string kw)

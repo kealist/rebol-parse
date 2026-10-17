@@ -31,6 +31,7 @@ public sealed record SkipRule : Rule;
 public sealed record EndRule : Rule;
 public sealed record FailRule : Rule;
 public sealed record BreakRule : Rule;
+public sealed record RejectRule : Rule;
 /// <summary>Matches a single item satisfying a predicate (charsets, datatype tests).</summary>
 public sealed record Item(Func<object, bool> Test, string Name = "item") : Rule;
 /// <summary>Repeats <paramref name="Body"/> between Min and Max times (Max = -1 for unbounded).</summary>
@@ -46,3 +47,13 @@ public sealed record Ref(string Name) : Rule;
 public sealed record Mark(string Name) : Rule;
 public sealed record Seek(string Name) : Rule;
 public sealed record Act(Action<Ctx> Run) : Rule;
+/// <summary>Inserts a value at the current position and moves past it.</summary>
+public sealed record Insert(Func<Ctx, object?> Value) : Rule;
+/// <summary>Matches <paramref name="Body"/>, replaces the matched input with a value, and moves past it.</summary>
+public sealed record Change(Rule Body, Func<Ctx, object?> Value) : Rule;
+/// <summary>Matches <paramref name="Body"/> and deletes the matched input.</summary>
+public sealed record Remove(Rule Body) : Rule;
+/// <summary>Runs <paramref name="Body"/> and stores the values it <see cref="Keep"/>s as a list in <paramref name="Var"/>.</summary>
+public sealed record Collect(string Var, Rule Body) : Rule;
+/// <summary>Matches <paramref name="Body"/> and appends the matched input to the enclosing <see cref="Collect"/>.</summary>
+public sealed record Keep(Rule Body) : Rule;

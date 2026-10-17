@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace RebolParse;
 
 /// <summary>A REBOL-style word value, for block-mode input.</summary>
@@ -6,7 +8,7 @@ public sealed record Word(string Name)
     public override string ToString() => Name;
 }
 
-/// <summary>Read-only view of the input being parsed: a string or a block of values.</summary>
+/// <summary>The input being parsed: a string or a block of values. A parse works on a private copy, so edits never touch the caller's data.</summary>
 public interface ISeries
 {
     int Length { get; }
@@ -17,30 +19,86 @@ public interface ISeries
 
     /// <summary>The input between two positions (a string, or a list for blocks).</summary>
     object Slice(int start, int end);
+
+    /// <summary>Remove the input in [start, end).</summary>
+    void Remove(int start, int end);
+
+    /// <summary>Insert a value at <paramref name="pos"/> and return how many positions it occupies (its length for text, 1 for a block item).</summary>
+    int Insert(int pos, object? value);
+
+    /// <summary>True once an edit has changed the input.</summary>
+    bool Modified { get; }
+
+    /// <summary>The current contents as a new string or list.</summary>
+    object ToResult();
 }
 
-public sealed class StringSeries(string text) : ISeries
+public sealed class StringSeries(string text, bool ignoreCase = false) : ISeries
 {
-    public int Length => text.Length;
-    public object this[int index] => text[index];
+    private readonly StringBuilder sb = new(text);
 
-    public int MatchLiteral(int pos, object value) => value switch
+    public int Length => sb.Length;
+    public object this[int index] => sb[index];
+    public bool Modified { get; private set; }
+
+    public int MatchLiteral(int pos, object value)
     {
-        char c => pos < text.Length && text[pos] == c ? 1 : -1,
-        string s => text.AsSpan(pos).StartsWith(s, StringComparison.Ordinal) ? s.Length : -1,
-        _ => -1,
-    };
+        switch (value)
+        {
+            case char c:
+                return pos < sb.Length && SameChar(sb[pos], c) ? 1 : -1;
+            case string s:
+                if (pos + s.Length > sb.Length) return -1;
+                for (var k = 0; k < s.Length; k++)
+                    if (!SameChar(sb[pos + k], s[k])) return -1;
+                return s.Length;
+            default:
+                return -1;
+        }
+    }
 
-    public object Slice(int start, int end) => text[start..end];
+    private bool SameChar(char a, char b) =>
+        a == b || (ignoreCase && char.ToUpperInvariant(a) == char.ToUpperInvariant(b));
+
+    public object Slice(int start, int end) => sb.ToString(start, end - start);
+
+    public void Remove(int start, int end)
+    {
+        if (end <= start) return;
+        sb.Remove(start, end - start);
+        Modified = true;
+    }
+
+    public int Insert(int pos, object? value)
+    {
+        var str = value?.ToString() ?? "";
+        if (str.Length == 0) return 0;
+        sb.Insert(pos, str);
+        Modified = true;
+        return str.Length;
+    }
+
+    public object ToResult() => sb.ToString();
 }
 
-public sealed class BlockSeries(IReadOnlyList<object> items) : ISeries
+public sealed class BlockSeries(IReadOnlyList<object> items, bool ignoreCase = false) : ISeries
 {
+    private readonly List<object> items = [.. items];
+
     public int Length => items.Count;
     public object this[int index] => items[index];
+    public bool Modified { get; private set; }
 
     public int MatchLiteral(int pos, object value) =>
-        pos < items.Count && Equals(items[pos], value) ? 1 : -1;
+        pos < items.Count && SameValue(items[pos], value) ? 1 : -1;
+
+    private bool SameValue(object a, object b) => (a, b) switch
+    {
+        (string x, string y) when ignoreCase => string.Equals(x, y, StringComparison.OrdinalIgnoreCase),
+        (char x, char y) when ignoreCase => char.ToUpperInvariant(x) == char.ToUpperInvariant(y),
+        (Word x, Word y) when ignoreCase => string.Equals(x.Name, y.Name, StringComparison.OrdinalIgnoreCase),
+        _ => Equals(a, b),
+    };
 
     public object Slice(int start, int end)
     {
@@ -48,4 +106,20 @@ public sealed class BlockSeries(IReadOnlyList<object> items) : ISeries
         for (var i = start; i < end; i++) list.Add(items[i]);
         return list;
     }
+
+    public void Remove(int start, int end)
+    {
+        if (end <= start) return;
+        items.RemoveRange(start, end - start);
+        Modified = true;
+    }
+
+    public int Insert(int pos, object? value)
+    {
+        items.Insert(pos, value ?? throw new ArgumentNullException(nameof(value), "Cannot insert null into a block."));
+        Modified = true;
+        return 1;
+    }
+
+    public object ToResult() => new List<object>(items);
 }
