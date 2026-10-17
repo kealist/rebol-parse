@@ -2,6 +2,16 @@
 
 A REBOL-style `parse` dialect for C#. Rules match strings (character by character) or blocks (lists of values), with captures and inline actions. Two ways to write rules, one engine underneath.
 
+## Install
+
+```
+dotnet add package RebolParse
+```
+
+Targets .NET 8 and .NET 10.
+
+## Example
+
 ```csharp
 using RebolParse;
 using static RebolParse.P;
@@ -55,3 +65,7 @@ Semantics follow REBOL: ordered choice (`|`) with backtracking, greedy repeats, 
 dotnet test
 dotnet run --project samples/Samples
 ```
+
+## License
+
+[MIT](LICENSE)
