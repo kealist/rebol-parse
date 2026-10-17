@@ -179,24 +179,12 @@ public class AllocationTests
     [Fact]
     public void Series_reuse_after_an_edit_starts_clean()
     {
-        var s = new StringSeries("abc");
-        s.Remove(0, 1);
-        Assert.Equal("bc", s.ToResult());
-        s.Reset("xyz", false, false);
-        Assert.False(s.Modified);
-        Assert.Equal("xyz", s.ToResult());
-        s.Insert(0, "!");
-        Assert.Equal("!xyz", s.ToResult());
-
         var b = new BlockSeries(new List<object> { 1 });
         b.Insert(0, 0);
         b.Reset(new List<object> { 7 }, false, false);
         Assert.False(b.Modified);
         b.Insert(1, 8);
         Assert.Equal(new object[] { 7, 8 }, Assert.IsAssignableFrom<IReadOnlyList<object>>(b.ToResult()));
-        Assert.Throws<NotSupportedException>(() => b.CharAt(0));
-        Assert.True(s.IsText);
-        Assert.False(b.IsText);
     }
 
     [Fact]

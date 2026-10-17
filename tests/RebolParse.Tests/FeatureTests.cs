@@ -127,6 +127,16 @@ public class FeatureTests
     }
 
     [Fact]
+    public void Inserts_can_grow_the_text_well_past_its_original_size()
+    {
+        var filler = new string('x', 50);
+        // skip first: an insert in a loop iteration that then fails is kept, as edits are never undone
+        var r = Parser.Parse("abcd", Insert(filler) + Some(Skip + Insert(filler)));
+        Assert.True(r.Matched);
+        Assert.Equal(filler + "a" + filler + "b" + filler + "c" + filler + "d" + filler, r.Output);
+    }
+
+    [Fact]
     public void Insert_of_an_empty_string_changes_nothing()
     {
         var r = Run("ab", "insert \"\" to end");
@@ -274,18 +284,6 @@ public class FeatureTests
     [Fact]
     public void Series_edit_members()
     {
-        var s = new StringSeries("abc");
-        Assert.False(s.Modified);
-        Assert.Equal(1, s.Insert(0, "x"));
-        Assert.True(s.Modified);
-        s = new StringSeries("abc");
-        s.Remove(1, 1);
-        Assert.Equal(0, s.Insert(1, ""));
-        Assert.False(s.Modified);
-        s.Remove(0, 1);
-        Assert.True(s.Modified);
-        Assert.Equal("bc", s.ToResult());
-
         var b = new BlockSeries(new List<object> { 1, 2 });
         b.Remove(1, 1);
         Assert.False(b.Modified);

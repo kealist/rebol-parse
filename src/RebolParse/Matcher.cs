@@ -7,11 +7,19 @@ namespace RebolParse;
 public sealed class Ctx
 {
     private static readonly Dictionary<string, Rule> NoRules = [];
-    private readonly List<BlockSeries> blockPool = [];
+    private static readonly IReadOnlyDictionary<string, object?> NoVars = new Dictionary<string, object?>().AsReadOnly();
+
+    // Created on first use so a parse that never captures, marks or collects allocates none of them.
+    private Dictionary<string, object?>? vars;
+    private Dictionary<string, int>? marks;
+    private Stack<List<object>>? collected;
+    private List<BlockSeries>? blockPool;
     private int blockDepth;
 
-    public Dictionary<string, object?> Vars { get; } = [];
-    public Dictionary<string, int> Marks { get; } = [];
+    /// <summary>Values stored by <c>copy</c>, <c>set</c> and <c>collect</c> so far.</summary>
+    public Dictionary<string, object?> Vars => vars ??= [];
+    /// <summary>Positions saved by <c>name:</c> marks.</summary>
+    public Dictionary<string, int> Marks => marks ??= [];
     public IReadOnlyDictionary<string, Rule> Rules { get; internal set; } = NoRules;
 
     /// <summary>Current position in the series being matched when an action runs.</summary>
@@ -21,13 +29,24 @@ public sealed class Ctx
     internal int LoopDepth;
     internal bool IgnoreCase;
     internal bool ReadOnly;
-    internal Stack<List<object>> Collected { get; } = new();
+
+    internal IReadOnlyDictionary<string, object?> VarsOrEmpty => vars ?? NoVars;
+    internal Dictionary<string, int> MarksTable => Marks;
+    internal Stack<List<object>>? Collected => collected;
+    internal Stack<List<object>> CollectedStack => collected ??= new();
+
+    /// <summary>The list the innermost <c>collect</c> is filling.</summary>
+    internal List<object> KeepTarget() =>
+        collected is { Count: > 0 } c ? c.Peek() : throw new InvalidOperationException("'keep' used outside 'collect'.");
+
+    internal int MarkAt(string name) =>
+        marks != null && marks.TryGetValue(name, out var at) ? at : throw new KeyNotFoundException($"Undefined mark '{name}'.");
 
     internal void Reset(IReadOnlyDictionary<string, Rule>? rules, bool ignoreCase, bool readOnly)
     {
-        Vars.Clear();
-        Marks.Clear();
-        Collected.Clear();
+        vars?.Clear();
+        marks?.Clear();
+        collected?.Clear();
         Rules = rules ?? NoRules;
         IgnoreCase = ignoreCase;
         ReadOnly = readOnly;
@@ -41,6 +60,7 @@ public sealed class Ctx
     /// <summary>A series over a nested block, taken from a per-depth pool so repeated <c>into</c> allocates nothing.</summary>
     internal BlockSeries RentBlock(IReadOnlyList<object> block)
     {
+        blockPool ??= [];
         if (blockDepth == blockPool.Count) blockPool.Add(new BlockSeries(block));
         var series = blockPool[blockDepth++];
         series.Reset(block, IgnoreCase, ReadOnly);
@@ -64,15 +84,32 @@ public static class Parser
     /// <summary>
     /// Parse a string. By default the rule must consume all input, as in REBOL.
     /// <paramref name="ignoreCase"/> makes literal strings and chars match regardless of case.
+    /// Build the rule once and reuse it: the first parse with a rule compiles it, like constructing a <c>Regex</c>.
     /// </summary>
     public static ParseResult Parse(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
-        bool partial = false, bool ignoreCase = false) =>
-        Run(new StringSeries(input, ignoreCase), rule, rules, partial, ignoreCase);
+        bool partial = false, bool ignoreCase = false)
+    {
+        var node = Compiler.Get(rule);
+        var ctx = new Ctx();
+        ctx.Reset(rules, ignoreCase, readOnly: false);
+        var engine = new TextEngine();
+        var text = engine.Reset(input, ignoreCase, ctx, isReadOnly: false);
+        var pos = 0;
+        var ok = node.Match(engine, ref text, ref pos);
+        return new ParseResult(ok && (partial || pos == text.Length), pos, ctx.VarsOrEmpty, engine.Result());
+    }
 
     /// <summary>Parse a block of values (chars, strings, numbers, <see cref="Word"/>, nested lists).</summary>
     public static ParseResult Parse(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
-        bool partial = false, bool ignoreCase = false) =>
-        Run(new BlockSeries(input, ignoreCase), rule, rules, partial, ignoreCase);
+        bool partial = false, bool ignoreCase = false)
+    {
+        var series = new BlockSeries(input, ignoreCase);
+        var ctx = new Ctx();
+        ctx.Reset(rules, ignoreCase, readOnly: false);
+        var pos = 0;
+        var ok = new Matcher(series, ctx).Match(rule, ref pos);
+        return new ParseResult(ok && (partial || pos == series.Length), pos, ctx.VarsOrEmpty, series.ToResult());
+    }
 
     /// <summary>
     /// Does <paramref name="rule"/> match? Allocation-free once warm for rules that do not <c>copy</c>, <c>set</c>,
@@ -82,12 +119,9 @@ public static class Parser
     public static bool IsMatch(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
         bool partial = false, bool ignoreCase = false)
     {
+        var node = Compiler.Get(rule);
         var scratch = Scratch.Acquire();
-        try
-        {
-            scratch.Text.Reset(input, ignoreCase, newReadOnly: true);
-            return scratch.Run(scratch.Text, rule, rules, partial, ignoreCase);
-        }
+        try { return scratch.RunText(input, node, rules, partial, ignoreCase); }
         finally { scratch.Release(); }
     }
 
@@ -96,21 +130,8 @@ public static class Parser
         bool partial = false, bool ignoreCase = false)
     {
         var scratch = Scratch.Acquire();
-        try
-        {
-            scratch.Block.Reset(input, ignoreCase, newReadOnly: true);
-            return scratch.Run(scratch.Block, rule, rules, partial, ignoreCase);
-        }
+        try { return scratch.RunBlock(input, rule, rules, partial, ignoreCase); }
         finally { scratch.Release(); }
-    }
-
-    private static ParseResult Run(ISeries series, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
-    {
-        var ctx = new Ctx();
-        ctx.Reset(rules, ignoreCase, readOnly: false);
-        var pos = 0;
-        var ok = new Matcher(series, ctx).Match(rule, ref pos);
-        return new ParseResult(ok && (partial || pos == series.Length), pos, ctx.Vars, series.ToResult());
     }
 
     /// <summary>Per-thread reusable parse state for <c>IsMatch</c>. A re-entrant call (an action calling IsMatch) gets its own.</summary>
@@ -119,11 +140,10 @@ public static class Parser
         [ThreadStatic] private static Scratch? cached;
 
         private readonly Ctx ctx = new();
+        private readonly TextEngine engine = new();
         private readonly Matcher matcher = new(null!, null!);
+        private readonly BlockSeries block = new([]);
         private bool inUse;
-
-        public StringSeries Text { get; } = new("");
-        public BlockSeries Block { get; } = new([]);
 
         public static Scratch Acquire()
         {
@@ -133,18 +153,32 @@ public static class Parser
             return scratch;
         }
 
-        public void Release() => inUse = false;
+        public void Release()
+        {
+            engine.Clear();   // do not keep the caller's input alive
+            inUse = false;
+        }
 
-        public bool Run(ISeries series, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
+        public bool RunText(string input, Node node, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
         {
             ctx.Reset(rules, ignoreCase, readOnly: true);
-            matcher.Reset(series, ctx);
+            var text = engine.Reset(input, ignoreCase, ctx, isReadOnly: true);
             var pos = 0;
-            return matcher.Match(rule, ref pos) && (partial || pos == series.Length);
+            return node.Match(engine, ref text, ref pos) && (partial || pos == text.Length);
+        }
+
+        public bool RunBlock(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
+        {
+            ctx.Reset(rules, ignoreCase, readOnly: true);
+            block.Reset(input, ignoreCase, newReadOnly: true);
+            matcher.Reset(block, ctx);
+            var pos = 0;
+            return matcher.Match(rule, ref pos) && (partial || pos == block.Length);
         }
     }
 }
 
+/// <summary>The interpreter for block input. String input runs on the compiled nodes in Compiled.cs.</summary>
 internal sealed class Matcher
 {
     private ISeries s;
@@ -171,14 +205,15 @@ internal sealed class Matcher
         var start = pos;
         var wasBreaking = ctx.BreakRequested;
         var wasRejecting = ctx.RejectRequested;
-        var kept = ctx.Collected.Count > 0 ? ctx.Collected.Peek().Count : 0;
+        var collected = ctx.Collected;
+        var kept = collected is { Count: > 0 } ? collected.Peek().Count : 0;
         if (Step(rule, ref pos)) return true;
         pos = start;
         ctx.BreakRequested = wasBreaking;
         ctx.RejectRequested = wasRejecting;
-        if (ctx.Collected.Count > 0)
+        if (collected is { Count: > 0 })
         {
-            var top = ctx.Collected.Peek();
+            var top = collected.Peek();
             if (top.Count > kept) top.RemoveRange(kept, top.Count - kept);
         }
         return false;
@@ -241,32 +276,32 @@ internal sealed class Matcher
 
             case Collect col:
                 var list = new List<object>();
-                ctx.Collected.Push(list);
-                var collected = Match(col.Body, ref pos);
-                ctx.Collected.Pop();
-                if (!collected) return false;
+                ctx.CollectedStack.Push(list);
+                var collectedOk = Match(col.Body, ref pos);
+                ctx.CollectedStack.Pop();
+                if (!collectedOk) return false;
                 ctx.Vars[col.Var] = list;
                 return true;
 
             case Keep keep:
-                if (ctx.Collected.Count == 0) throw new InvalidOperationException("'keep' used outside 'collect'.");
+                var keepTarget = ctx.KeepTarget();
                 var kStart = pos;
                 if (!Match(keep.Body, ref pos)) return false;
-                var span = s.Slice(kStart, pos);
-                ctx.Collected.Peek().Add(span is IReadOnlyList<object> { Count: 1 } one ? one[0] : span);
+                var span = (IReadOnlyList<object>)s.Slice(kStart, pos);
+                keepTarget.Add(span.Count == 1 ? span[0] : span);
                 return true;
 
             case KeepPick pick:
-                if (ctx.Collected.Count == 0) throw new InvalidOperationException("'keep' used outside 'collect'.");
+                var pickTarget = ctx.KeepTarget();
                 var pStart = pos;
                 if (!Match(pick.Body, ref pos)) return false;
-                if (pos > pStart) ctx.Collected.Peek().Add(s[pStart]);
+                if (pos > pStart) pickTarget.Add(s[pStart]);
                 return true;
 
             case KeepValue kv:
-                if (ctx.Collected.Count == 0) throw new InvalidOperationException("'keep' used outside 'collect'.");
+                var valueTarget = ctx.KeepTarget();
                 ctx.Pos = pos;
-                if (kv.Value(ctx) is { } kept) ctx.Collected.Peek().Add(kept);
+                if (kv.Value(ctx) is { } kept) valueTarget.Add(kept);
                 return true;
 
             case If cond:
@@ -274,8 +309,7 @@ internal sealed class Matcher
                 return cond.Condition(ctx);
 
             case Item it:
-                if (pos >= s.Length) return false;
-                if (!(s.IsText && it.CharTest is { } charTest ? charTest(s.CharAt(pos)) : it.Test(s[pos]))) return false;
+                if (pos >= s.Length || !it.Test(s[pos])) return false;
                 pos++;
                 return true;
 
@@ -309,7 +343,7 @@ internal sealed class Matcher
                 return true;
 
             case Into into:
-                if (s.IsText || pos >= s.Length || s[pos] is not IReadOnlyList<object> block) return false;
+                if (pos >= s.Length || s[pos] is not IReadOnlyList<object> block) return false;
                 var inner = ctx.RentBlock(block);
                 var outer = s;
                 s = inner;
@@ -333,13 +367,11 @@ internal sealed class Matcher
                 return Match(target, ref pos);
 
             case Mark m:
-                ctx.Marks[m.Name] = pos;
+                ctx.MarksTable[m.Name] = pos;
                 return true;
 
             case Seek sk:
-                if (!ctx.Marks.TryGetValue(sk.Name, out var to2))
-                    throw new KeyNotFoundException($"Undefined mark '{sk.Name}'.");
-                pos = to2;
+                pos = ctx.MarkAt(sk.Name);
                 return true;
 
             case Act act:

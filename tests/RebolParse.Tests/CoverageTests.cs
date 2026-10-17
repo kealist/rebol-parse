@@ -103,22 +103,6 @@ public class CoverageTests
     public void Word_prints_its_name() => Assert.Equal("add", new Word("add").ToString());
 
     [Fact]
-    public void StringSeries_literals_indexer_and_slice()
-    {
-        var s = new StringSeries("hello");
-        Assert.Equal(5, s.Length);
-        Assert.Equal('e', s[1]);
-        Assert.Equal("ell", s.Slice(1, 4));
-        Assert.Equal(1, s.MatchLiteral(0, 'h'));
-        Assert.Equal(-1, s.MatchLiteral(0, 'x'));
-        Assert.Equal(-1, s.MatchLiteral(5, 'o'));
-        Assert.Equal(3, s.MatchLiteral(2, "llo"));
-        Assert.Equal(-1, s.MatchLiteral(2, "lx"));
-        Assert.Equal(-1, s.MatchLiteral(4, "oo"));
-        Assert.Equal(-1, s.MatchLiteral(0, 42)); // only chars and strings match text
-    }
-
-    [Fact]
     public void BlockSeries_literals_indexer_and_slice()
     {
         var s = new BlockSeries(new List<object> { 1, "two", new Word("three") });
