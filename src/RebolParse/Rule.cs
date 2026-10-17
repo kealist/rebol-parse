@@ -57,3 +57,9 @@ public sealed record Remove(Rule Body) : Rule;
 public sealed record Collect(string Var, Rule Body) : Rule;
 /// <summary>Matches <paramref name="Body"/> and appends the matched input to the enclosing <see cref="Collect"/>.</summary>
 public sealed record Keep(Rule Body) : Rule;
+/// <summary>Matches <paramref name="Body"/> and appends only the first matched item to the enclosing <see cref="Collect"/> (nothing if the match is empty).</summary>
+public sealed record KeepPick(Rule Body) : Rule;
+/// <summary>Appends a computed value to the enclosing <see cref="Collect"/> without consuming input. A null result keeps nothing.</summary>
+public sealed record KeepValue(Func<Ctx, object?> Value) : Rule;
+/// <summary>Succeeds, consuming nothing, when the condition holds.</summary>
+public sealed record If(Func<Ctx, bool> Condition) : Rule;

@@ -6,6 +6,7 @@ namespace RebolParse;
 /// Reads REBOL-style parse rule text into a <see cref="Rule"/> tree.
 /// <code>Dialect.Read("some [digit | #\"x\"] copy rest to end")</code>
 /// Paren actions are bound by name: <c>(@log)</c> calls <c>actions["log"]</c>.
+/// <c>keep (@name)</c> and <c>if (@name)</c> call <c>values["name"]</c>, a function of the parse context.
 /// Bare words that are not keywords or built-in sets become <see cref="Ref"/>s into the rule table.
 /// </summary>
 public static class Dialect
@@ -20,21 +21,24 @@ public static class Dialect
     };
 
     /// <summary>Read a rule. The outer brackets are optional: "a b | c" and "[a b | c]" are equivalent.</summary>
-    public static Rule Read(string text, IReadOnlyDictionary<string, Action<Ctx>>? actions = null)
+    public static Rule Read(string text, IReadOnlyDictionary<string, Action<Ctx>>? actions = null,
+        IReadOnlyDictionary<string, Func<Ctx, object?>>? values = null)
     {
+        var bindings = new Bindings(actions, values);
         var tokens = Tokenize(text);
         var i = 0;
-        return ReadAlt(tokens, ref i, actions, closer: null); // a stray ']' throws inside ReadAlt
+        return ReadAlt(tokens, ref i, bindings, closer: null); // a stray ']' throws inside ReadAlt
     }
 
     /// <summary>Read several named rules, e.g. for recursive grammars. Pass the result as the parse rule table.</summary>
     public static Dictionary<string, Rule> ReadRules(
-        IEnumerable<KeyValuePair<string, string>> defs, IReadOnlyDictionary<string, Action<Ctx>>? actions = null) =>
-        defs.ToDictionary(d => d.Key, d => Read(d.Value, actions));
+        IEnumerable<KeyValuePair<string, string>> defs, IReadOnlyDictionary<string, Action<Ctx>>? actions = null,
+        IReadOnlyDictionary<string, Func<Ctx, object?>>? values = null) =>
+        defs.ToDictionary(d => d.Key, d => Read(d.Value, actions, values));
 
     // ---- Reader ----
 
-    private static Rule ReadAlt(List<Token> t, ref int i, IReadOnlyDictionary<string, Action<Ctx>>? acts, string? closer)
+    private static Rule ReadAlt(List<Token> t, ref int i, Bindings acts, string? closer)
     {
         var alts = new List<Rule>();
         var seq = new List<Rule>();
@@ -56,7 +60,7 @@ public static class Dialect
         return alts.Count == 1 ? alts[0] : new Alt([.. alts]);
     }
 
-    private static Rule ReadItem(List<Token> t, ref int i, IReadOnlyDictionary<string, Action<Ctx>>? acts)
+    private static Rule ReadItem(List<Token> t, ref int i, Bindings acts)
     {
         if (i >= t.Count) throw new FormatException("Rule ended where an item was expected.");
         var tok = t[i++];
@@ -84,7 +88,7 @@ public static class Dialect
         }
     }
 
-    private static Rule ReadWord(string w, List<Token> t, ref int i, IReadOnlyDictionary<string, Action<Ctx>>? acts)
+    private static Rule ReadWord(string w, List<Token> t, ref int i, Bindings acts)
     {
         switch (w.ToLowerInvariant())
         {
@@ -101,7 +105,18 @@ public static class Dialect
             case "set": return new Set(ReadVarName(t, ref i, "set"), ReadItem(t, ref i, acts));
             case "insert": return new Insert(ReadValue(t, ref i, "insert"));
             case "remove": return new Remove(ReadItem(t, ref i, acts));
-            case "keep": return new Keep(ReadItem(t, ref i, acts));
+            case "keep":
+                if (i < t.Count && t[i].Kind == K.Paren) return new KeepValue(BindValue(t[i++].Text, acts));
+                if (i < t.Count && t[i].Kind == K.Word && t[i].Text.Equals("pick", StringComparison.OrdinalIgnoreCase))
+                {
+                    i++;
+                    return new KeepPick(ReadItem(t, ref i, acts));
+                }
+                return new Keep(ReadItem(t, ref i, acts));
+            case "if":
+                if (i >= t.Count || t[i].Kind != K.Paren) throw new FormatException("'if' needs a condition like (@name).");
+                var cond = BindValue(t[i++].Text, acts);
+                return new If(ctx => cond(ctx) switch { bool b => b, null => false, _ => true });
             case "collect": return new Collect(ReadVarName(t, ref i, "collect"), ReadItem(t, ref i, acts));
             case "change":
                 var body = ReadItem(t, ref i, acts);
@@ -149,18 +164,32 @@ public static class Dialect
         return t[i++].Text;
     }
 
-    private static Rule BindAction(string body, IReadOnlyDictionary<string, Action<Ctx>>? acts)
+    private static Func<Ctx, object?> BindValue(string body, Bindings acts)
+    {
+        body = body.Trim();
+        if (!body.StartsWith('@'))
+            throw new FormatException($"Paren code '({body})' is not evaluated; bind a named function with '(@name)'.");
+        var name = body[1..];
+        if (acts.Values == null || !acts.Values.TryGetValue(name, out var fn))
+            throw new KeyNotFoundException($"No value function registered for '(@{name})'.");
+        return fn;
+    }
+
+    private static Rule BindAction(string body, Bindings acts)
     {
         body = body.Trim();
         if (!body.StartsWith('@'))
             throw new FormatException($"Paren code '({body})' is not evaluated; bind a named action with '(@name)'.");
         var name = body[1..];
-        if (acts == null || !acts.TryGetValue(name, out var act))
+        if (acts.Actions == null || !acts.Actions.TryGetValue(name, out var act))
             throw new KeyNotFoundException($"No action registered for '(@{name})'.");
         return new Act(act);
     }
 
     // ---- Tokenizer ----
+
+    private readonly record struct Bindings(
+        IReadOnlyDictionary<string, Action<Ctx>>? Actions, IReadOnlyDictionary<string, Func<Ctx, object?>>? Values);
 
     private enum K { Open, Close, Bar, Str, Char, Int, Word, SetWord, GetWord, Paren }
     private readonly record struct Token(K Kind, string Text);

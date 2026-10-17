@@ -405,7 +405,7 @@ In 3, `insert` already steps past the new space, so the loop moves on correctly.
 collect words any [keep some alpha | skip]       ; "hello big world" -> ["hello", "big", "world"]
 ```
 
-In text mode you collect strings. In block mode a one-item match keeps the item itself, and a longer match keeps a list. A `keep` made in a branch that later fails is dropped, so alternatives are safe.
+In text mode you collect strings. In block mode a one-item match keeps the item itself, and a longer match keeps a list. A `keep` made in a branch that later fails is dropped, so alternatives are safe. `keep pick r` keeps only the first item of the match, and `keep (@name)` keeps a value computed by a C# function you pass in the `values` table.
 
 ### Exercises
 

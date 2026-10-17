@@ -55,6 +55,9 @@ New to parse? Work through the [tutorial](docs/Tutorial.md): fifteen lessons wit
 | `remove r` | `Remove(r)` | deletes what `r` matched |
 | `collect v r` | `Collect("v", r)` | list of everything `r` keeps, stored in `Vars` |
 | `keep r` | `Keep(r)` | appends the match to the enclosing `collect` |
+| `keep pick r` | `KeepPick(r)` | appends only the first matched item |
+| `keep (@fn)` | `Keep(ctx => value)` | appends a computed value; `null` keeps nothing |
+| `if (@fn)` | `If(ctx => bool)` | succeeds without consuming when the condition holds |
 | `(code)` | `Do(ctx => ...)` | text form binds by name: `(@name)` |
 | `digit alpha alnum upper lower space newline tab` | `Digit` ... | string mode |
 | `integer! decimal! string! word! block!` | `Integer` ... | block mode |
@@ -82,8 +85,7 @@ Literal strings, chars and words match regardless of case with `Parser.Parse(inp
 - Paren code is not evaluated. Actions are C# delegates bound with `(@name)`.
 - Matching is case-sensitive unless you pass `ignoreCase: true`.
 - Edits apply to a copy of the input and come back in `ParseResult.Output`.
-- `keep` takes a rule only: there is no `keep pick` or `keep (expr)`.
-- Not implemented: `to`/`thru` on non-rule datatype shorthands.
+- Paren code in `keep (@fn)` and `if (@fn)` is bound by name, like actions: pass a `values` table to `Dialect.Read`, mapping names to `Func<Ctx, object?>`. `if` treats `false` and `null` as false and any other result as true.
 - Backtracking is plain recursive descent with no memoization, so pathological grammars can be slow.
 - Variables set inside an alternative that later fails are not rolled back (REBOL behaves the same way).
 

@@ -34,6 +34,9 @@ public static class P
     public static Rule Remove(Rule r) => new Remove(r);
     public static Rule Collect(string name, Rule r) => new Collect(name, r);
     public static Rule Keep(Rule r) => new Keep(r);
+    public static Rule KeepPick(Rule r) => new KeepPick(r);
+    public static Rule Keep(Func<Ctx, object?> value) => new KeepValue(value);
+    public static Rule If(Func<Ctx, bool> condition) => new If(condition);
     public static Rule Lit(object value) => new Lit(value);
     public static Rule Choice(params Rule[] alts) => new Alt(alts);
     public static Rule Seq(params Rule[] items) => new Seq(items);

@@ -145,6 +145,23 @@ internal sealed class Matcher(ISeries s, Ctx ctx)
                 ctx.Collected.Peek().Add(span is IReadOnlyList<object> { Count: 1 } one ? one[0] : span);
                 return true;
 
+            case KeepPick pick:
+                if (ctx.Collected.Count == 0) throw new InvalidOperationException("'keep' used outside 'collect'.");
+                var pStart = pos;
+                if (!Match(pick.Body, ref pos)) return false;
+                if (pos > pStart) ctx.Collected.Peek().Add(s[pStart]);
+                return true;
+
+            case KeepValue kv:
+                if (ctx.Collected.Count == 0) throw new InvalidOperationException("'keep' used outside 'collect'.");
+                ctx.Pos = pos;
+                if (kv.Value(ctx) is { } kept) ctx.Collected.Peek().Add(kept);
+                return true;
+
+            case If cond:
+                ctx.Pos = pos;
+                return cond.Condition(ctx);
+
             case Item it:
                 if (pos >= s.Length || !it.Test(s[pos])) return false;
                 pos++;
