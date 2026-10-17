@@ -24,9 +24,7 @@ public static class Dialect
     {
         var tokens = Tokenize(text);
         var i = 0;
-        var rule = ReadAlt(tokens, ref i, actions, closer: null);
-        if (i < tokens.Count) throw new FormatException($"Unexpected '{tokens[i].Text}'.");
-        return rule;
+        return ReadAlt(tokens, ref i, actions, closer: null); // a stray ']' throws inside ReadAlt
     }
 
     /// <summary>Read several named rules, e.g. for recursive grammars. Pass the result as the parse rule table.</summary>
