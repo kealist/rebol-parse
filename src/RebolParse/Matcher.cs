@@ -1,11 +1,18 @@
 namespace RebolParse;
 
-/// <summary>State shared across a whole parse (including nested <c>into</c> blocks).</summary>
+/// <summary>
+/// State shared across a whole parse (including nested <c>into</c> blocks). During <see cref="Parser.IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/>
+/// one instance is reused for every call on a thread, so do not keep a reference to it.
+/// </summary>
 public sealed class Ctx
 {
+    private static readonly Dictionary<string, Rule> NoRules = [];
+    private readonly List<BlockSeries> blockPool = [];
+    private int blockDepth;
+
     public Dictionary<string, object?> Vars { get; } = [];
     public Dictionary<string, int> Marks { get; } = [];
-    public IReadOnlyDictionary<string, Rule> Rules { get; init; } = new Dictionary<string, Rule>();
+    public IReadOnlyDictionary<string, Rule> Rules { get; internal set; } = NoRules;
 
     /// <summary>Current position in the series being matched when an action runs.</summary>
     public int Pos { get; internal set; }
@@ -13,7 +20,34 @@ public sealed class Ctx
     internal bool RejectRequested;
     internal int LoopDepth;
     internal bool IgnoreCase;
+    internal bool ReadOnly;
     internal Stack<List<object>> Collected { get; } = new();
+
+    internal void Reset(IReadOnlyDictionary<string, Rule>? rules, bool ignoreCase, bool readOnly)
+    {
+        Vars.Clear();
+        Marks.Clear();
+        Collected.Clear();
+        Rules = rules ?? NoRules;
+        IgnoreCase = ignoreCase;
+        ReadOnly = readOnly;
+        Pos = 0;
+        LoopDepth = 0;
+        blockDepth = 0;
+        BreakRequested = false;
+        RejectRequested = false;
+    }
+
+    /// <summary>A series over a nested block, taken from a per-depth pool so repeated <c>into</c> allocates nothing.</summary>
+    internal BlockSeries RentBlock(IReadOnlyList<object> block)
+    {
+        if (blockDepth == blockPool.Count) blockPool.Add(new BlockSeries(block));
+        var series = blockPool[blockDepth++];
+        series.Reset(block, IgnoreCase, ReadOnly);
+        return series;
+    }
+
+    internal void ReturnBlock() => blockDepth--;
 }
 
 /// <param name="Matched">Whether the rule matched (and consumed all input, unless parsing partially).</param>
@@ -40,17 +74,94 @@ public static class Parser
         bool partial = false, bool ignoreCase = false) =>
         Run(new BlockSeries(input, ignoreCase), rule, rules, partial, ignoreCase);
 
+    /// <summary>
+    /// Does <paramref name="rule"/> match? Allocation-free once warm for rules that do not <c>copy</c>, <c>set</c>,
+    /// <c>collect</c> or use <see cref="P.Is"/> on text: all working state is reused per thread. Because nothing is
+    /// returned, rules that edit input (<c>insert</c>, <c>change</c>, <c>remove</c>) throw; use <see cref="Parse(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/> for those.
+    /// </summary>
+    public static bool IsMatch(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
+        bool partial = false, bool ignoreCase = false)
+    {
+        var scratch = Scratch.Acquire();
+        try
+        {
+            scratch.Text.Reset(input, ignoreCase, newReadOnly: true);
+            return scratch.Run(scratch.Text, rule, rules, partial, ignoreCase);
+        }
+        finally { scratch.Release(); }
+    }
+
+    /// <summary><see cref="IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/> for a block of values.</summary>
+    public static bool IsMatch(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
+        bool partial = false, bool ignoreCase = false)
+    {
+        var scratch = Scratch.Acquire();
+        try
+        {
+            scratch.Block.Reset(input, ignoreCase, newReadOnly: true);
+            return scratch.Run(scratch.Block, rule, rules, partial, ignoreCase);
+        }
+        finally { scratch.Release(); }
+    }
+
     private static ParseResult Run(ISeries series, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
     {
-        var ctx = new Ctx { Rules = rules ?? new Dictionary<string, Rule>(), IgnoreCase = ignoreCase };
+        var ctx = new Ctx();
+        ctx.Reset(rules, ignoreCase, readOnly: false);
         var pos = 0;
         var ok = new Matcher(series, ctx).Match(rule, ref pos);
         return new ParseResult(ok && (partial || pos == series.Length), pos, ctx.Vars, series.ToResult());
     }
+
+    /// <summary>Per-thread reusable parse state for <c>IsMatch</c>. A re-entrant call (an action calling IsMatch) gets its own.</summary>
+    private sealed class Scratch
+    {
+        [ThreadStatic] private static Scratch? cached;
+
+        private readonly Ctx ctx = new();
+        private readonly Matcher matcher = new(null!, null!);
+        private bool inUse;
+
+        public StringSeries Text { get; } = new("");
+        public BlockSeries Block { get; } = new([]);
+
+        public static Scratch Acquire()
+        {
+            var scratch = cached ??= new Scratch();
+            if (scratch.inUse) scratch = new Scratch();
+            scratch.inUse = true;
+            return scratch;
+        }
+
+        public void Release() => inUse = false;
+
+        public bool Run(ISeries series, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
+        {
+            ctx.Reset(rules, ignoreCase, readOnly: true);
+            matcher.Reset(series, ctx);
+            var pos = 0;
+            return matcher.Match(rule, ref pos) && (partial || pos == series.Length);
+        }
+    }
 }
 
-internal sealed class Matcher(ISeries s, Ctx ctx)
+internal sealed class Matcher
 {
+    private ISeries s;
+    private Ctx ctx;
+
+    public Matcher(ISeries s, Ctx ctx)
+    {
+        this.s = s;
+        this.ctx = ctx;
+    }
+
+    public void Reset(ISeries newSeries, Ctx newCtx)
+    {
+        s = newSeries;
+        ctx = newCtx;
+    }
+
     /// <summary>
     /// Match <paramref name="rule"/> at <paramref name="pos"/>. On failure pos is left unchanged, and any
     /// break/reject or <c>keep</c> from the failed attempt is dropped. Captures, actions and edits are not undone.
@@ -163,7 +274,8 @@ internal sealed class Matcher(ISeries s, Ctx ctx)
                 return cond.Condition(ctx);
 
             case Item it:
-                if (pos >= s.Length || !it.Test(s[pos])) return false;
+                if (pos >= s.Length) return false;
+                if (!(s.IsText && it.CharTest is { } charTest ? charTest(s.CharAt(pos)) : it.Test(s[pos]))) return false;
                 pos++;
                 return true;
 
@@ -197,15 +309,20 @@ internal sealed class Matcher(ISeries s, Ctx ctx)
                 return true;
 
             case Into into:
-                if (pos >= s.Length || s[pos] is not IReadOnlyList<object> block) return false;
-                var innerSeries = new BlockSeries(block, ctx.IgnoreCase);
-                var inner = new Matcher(innerSeries, ctx);
+                if (s.IsText || pos >= s.Length || s[pos] is not IReadOnlyList<object> block) return false;
+                var inner = ctx.RentBlock(block);
+                var outer = s;
+                s = inner;
                 var ip = 0;
-                if (!inner.Match(into.Body, ref ip) || ip != innerSeries.Length) return false;
-                if (innerSeries.Modified)
+                var intoOk = Match(into.Body, ref ip) && ip == inner.Length;
+                s = outer;
+                var edited = intoOk && inner.Modified ? inner.ToResult() : null;
+                ctx.ReturnBlock();
+                if (!intoOk) return false;
+                if (edited != null)
                 {
                     s.Remove(pos, pos + 1);
-                    s.Insert(pos, innerSeries.ToResult());
+                    s.Insert(pos, edited);
                 }
                 pos++;
                 return true;

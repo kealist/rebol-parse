@@ -26,9 +26,10 @@ public class PhoneNumber
     private readonly Regex compiled = new("^[0-9]{3}-[0-9]{4}$", RegexOptions.Compiled);
 
     [GlobalSetup]
-    public void Setup() => Guard.Same("phone", Parse(), compiled.IsMatch(Input));
+    public void Setup() => Guard.Same("phone", IsMatch(), compiled.IsMatch(Input));
 
     [Benchmark(Baseline = true)] public bool Parse() => Parser.Parse(Input, rule).Matched;
+    [Benchmark] public bool IsMatch() => Parser.IsMatch(Input, rule);
     [Benchmark] public bool RegexInterpreted() => interpreted.IsMatch(Input);
     [Benchmark] public bool RegexCompiled() => compiled.IsMatch(Input);
 }
@@ -52,6 +53,7 @@ public class NumberList
     }
 
     [Benchmark(Baseline = true)] public bool Parse() => Parser.Parse(input, rule).Matched;
+    [Benchmark] public bool IsMatch() => Parser.IsMatch(input, rule);
     [Benchmark] public bool RegexInterpreted() => interpreted.IsMatch(input);
     [Benchmark] public bool RegexCompiled() => compiled.IsMatch(input);
 }
@@ -147,6 +149,7 @@ public class BalancedParens
     {
         ["group"] = "\"(\" any group \")\"",
     });
+    private static readonly Rule group = Ref("group");
     private const string Pattern = @"^(?:[^()]|(?<open>\()|(?<-open>\)))*(?(open)(?!))$";
     private readonly Regex interpreted = new(Pattern);
     private readonly Regex compiled = new(Pattern, RegexOptions.Compiled);
@@ -163,6 +166,7 @@ public class BalancedParens
     }
 
     [Benchmark(Baseline = true)] public bool Parse() => Parser.Parse(input, Ref("group"), rules).Matched;
+    [Benchmark] public bool IsMatch() => Parser.IsMatch(input, group, rules);
     [Benchmark] public bool RegexInterpreted() => interpreted.IsMatch(input);
     [Benchmark] public bool RegexCompiled() => compiled.IsMatch(input);
 }

@@ -32,8 +32,11 @@ public sealed record EndRule : Rule;
 public sealed record FailRule : Rule;
 public sealed record BreakRule : Rule;
 public sealed record RejectRule : Rule;
-/// <summary>Matches a single item satisfying a predicate (charsets, datatype tests).</summary>
-public sealed record Item(Func<object, bool> Test, string Name = "item") : Rule;
+/// <summary>
+/// Matches a single item satisfying a predicate (charsets, datatype tests). When <paramref name="CharTest"/> is set,
+/// string input is tested through it directly, so no character is boxed.
+/// </summary>
+public sealed record Item(Func<object, bool> Test, string Name = "item", Func<char, bool>? CharTest = null) : Rule;
 /// <summary>Repeats <paramref name="Body"/> between Min and Max times (Max = -1 for unbounded).</summary>
 public sealed record Repeat(Rule Body, int Min, int Max) : Rule;
 public sealed record Ahead(Rule Body) : Rule;

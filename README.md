@@ -91,7 +91,7 @@ Literal strings, chars and words match regardless of case with `Parser.Parse(inp
 
 ## Performance
 
-Regex is faster on flat text, by roughly 4-17x for validation and capture. RebolParse is aimed at grammars regex handles badly. See [benchmarks](docs/Benchmarks.md) for the numbers and the one known slow path (`remove` on large inputs).
+`Parser.IsMatch(input, rule)` answers yes or no without allocating, for rules that do not capture or edit; `Parser.Parse` returns captures and edits. Regex is faster on flat text, by roughly 3-8x for validation and capture, while RebolParse is aimed at grammars regex handles badly. See [benchmarks](docs/Benchmarks.md) for the numbers and the one known slow path (`remove` on large inputs).
 
 ## Build
 

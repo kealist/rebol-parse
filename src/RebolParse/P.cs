@@ -43,7 +43,7 @@ public static class P
 
     // --- Character sets (string mode) ---
     public static Rule CharIf(Func<char, bool> test, string name = "char") =>
-        new Item(o => o is char c && test(c), name);
+        new Item(o => o is char c && test(c), name, test);
     public static Rule CharIn(string chars) => CharIf(chars.Contains, $"[{chars}]");
     public static Rule CharRange(char lo, char hi) => CharIf(c => c >= lo && c <= hi, $"{lo}-{hi}");
 
