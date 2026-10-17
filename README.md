@@ -89,6 +89,10 @@ Literal strings, chars and words match regardless of case with `Parser.Parse(inp
 - Backtracking is plain recursive descent with no memoization, so pathological grammars can be slow.
 - Variables set inside an alternative that later fails are not rolled back (REBOL behaves the same way).
 
+## Performance
+
+Regex is faster on flat text, by roughly 4-17x for validation and capture. RebolParse is aimed at grammars regex handles badly. See [benchmarks](docs/Benchmarks.md) for the numbers and the one known slow path (`remove` on large inputs).
+
 ## Build
 
 ```bash
