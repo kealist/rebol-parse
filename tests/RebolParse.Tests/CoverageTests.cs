@@ -425,3 +425,225 @@ public class CoverageTests
         Assert.Throws<KeyNotFoundException>(() => Parser.Parse(new List<object>(), Ref("missing")));
     }
 }
+
+public class BreakLeakTests
+{
+    [Fact]
+    public void Break_outside_a_loop_does_not_cut_a_later_loop_short()
+    {
+        // 'break' here is not inside any loop; the following 'some' must still consume all three a's
+        var rule = Dialect.Read("break some \"a\"");
+        Assert.True(Parser.Parse("aaa", rule).Matched);
+    }
+
+    [Fact]
+    public void Break_from_an_abandoned_branch_does_not_leak()
+    {
+        // first branch sets break, then fails and backtracks; the loop must keep going
+        var rule = Dialect.Read("some [break \"z\" | \"a\"]");
+        Assert.True(Parser.Parse("aaa", rule).Matched);
+    }
+}
+
+public class MutationKillerTests
+{
+    private static Rule Read(string t) => Dialect.Read(t);
+
+    [Fact]
+    public void Break_really_stops_the_loop()
+    {
+        // without the break the loop would eat both a's and the trailing "a" would fail
+        Assert.True(Parser.Parse("aa", Read("any [\"a\" break] \"a\"")).Matched);
+    }
+
+    [Fact]
+    public void Any_is_unbounded_and_rep_zero_matches_nothing()
+    {
+        Assert.True(Parser.Parse("aaaa", Any("a")).Matched);
+        var r = Parser.Parse("aa", Rep(0, 0, "a"), partial: true);
+        Assert.Equal(0, r.Position);
+        Assert.Equal(0, Parser.Parse("aa", Read("0 \"a\""), partial: true).Position);
+    }
+
+    [Fact]
+    public void Thru_consumes_the_match_but_to_does_not()
+    {
+        Assert.True(Parser.Parse("key=value", Thru("=") + "value").Matched);
+        Assert.False(Parser.Parse("key=value", To("=") + "value").Matched);
+        Assert.Equal(4, Parser.Parse("key=value", Thru("="), partial: true).Position);
+        Assert.Equal(3, Parser.Parse("key=value", To("="), partial: true).Position);
+    }
+
+    [Fact]
+    public void Choice_with_no_match_fails_and_skip_does_not_overrun()
+    {
+        Assert.False(Parser.Parse("c", (Rule)"a" | "b").Matched);
+        Assert.False(Parser.Parse("c", (Rule)"a" | "b", partial: true).Matched);
+        Assert.Equal(0, Parser.Parse("", Skip, partial: true).Position);
+        Assert.False(Parser.Parse("", Skip, partial: true).Matched);
+        Assert.False(Parser.Parse("", Digit, partial: true).Matched);
+    }
+
+    [Fact]
+    public void Into_failure_falls_through_to_the_next_alternative()
+    {
+        var input = new List<object> { new List<object> { 1, "x" } };
+        var r = Parser.Parse(input, Into(Some(Integer)) | Into(Any(Skip)));
+        Assert.True(r.Matched);
+        var failing = Parser.Parse(input, Into(Some(Integer)), partial: true);
+        Assert.False(failing.Matched);
+        Assert.Equal(0, failing.Position);
+    }
+
+    [Fact]
+    public void CharRange_includes_both_endpoints()
+    {
+        Assert.True(Parser.Parse("az", Rep(2, CharRange('a', 'z'))).Matched);
+        Assert.False(Parser.Parse("`", CharRange('a', 'z')).Matched);
+        Assert.False(Parser.Parse("{", CharRange('a', 'z')).Matched);
+    }
+
+    [Fact]
+    public void Builtin_rules_carry_their_names()
+    {
+        string N(Rule r) => Assert.IsType<Item>(r).Name;
+        Assert.Equal("digit", N(Digit));
+        Assert.Equal("alpha", N(Alpha));
+        Assert.Equal("alnum", N(AlphaNum));
+        Assert.Equal("upper", N(Upper));
+        Assert.Equal("lower", N(Lower));
+        Assert.Equal("space", N(Space));
+        Assert.Equal("integer!", N(Integer));
+        Assert.Equal("decimal!", N(P.Decimal));
+        Assert.Equal("string!", N(Str));
+        Assert.Equal("word!", N(WordType));
+        Assert.Equal("block!", N(BlockType));
+        Assert.Equal("item", N(Is(_ => true)));
+    }
+
+    [Fact]
+    public void Reader_builds_minimal_trees()
+    {
+        Assert.IsType<Lit>(Read("\"a\""));
+        Assert.IsType<Lit>(Read("[\"a\"]"));
+        Assert.Equal(2, Assert.IsType<Seq>(Read("\"a\" \"b\"")).Items.Length);
+        Assert.Equal(2, Assert.IsType<Alt>(Read("\"a\" | \"b\"")).Items.Length);
+        // "a b | c" is Alt(Seq(a,b), c), and the bar splits the sequence
+        var alt = Assert.IsType<Alt>(Read("\"a\" \"b\" | \"c\""));
+        Assert.IsType<Seq>(alt.Items[0]);
+        Assert.IsType<Lit>(alt.Items[1]);
+        Assert.Empty(Assert.IsType<Seq>(Read("")).Items);
+    }
+
+    [Fact]
+    public void Trailing_bar_adds_an_empty_alternative()
+    {
+        var alt = Assert.IsType<Alt>(Read("\"a\" |"));
+        Assert.Empty(Assert.IsType<Seq>(alt.Items[1]).Items);
+        Assert.True(Parser.Parse("", Read("\"a\" |")).Matched);
+        Assert.True(Parser.Parse("", Read("[\"a\" |]")).Matched);
+    }
+
+    [Fact]
+    public void Words_split_at_every_delimiter_without_whitespace()
+    {
+        Assert.IsType<Alt>(Read("\"a\"|\"b\""));
+        Assert.IsType<Repeat>(Read("some[\"a\"]"));
+        Assert.True(Parser.Parse("ab", Read("\"a\"[\"b\"]")).Matched);
+        Assert.Equal(new Ref("x"), Assert.IsType<Seq>(Read("x[\"b\"]")).Items[0]);
+        Assert.Equal(new Ref("x"), Assert.IsType<Seq>(Read("x\"b\"")).Items[0]);
+        Assert.Equal(new Ref("x"), Assert.IsType<Alt>(Read("x|y")).Items[0]);
+        Assert.Equal(new Ref("x"), Read("x;comment"));
+        Assert.Equal(new Ref("x"), Assert.IsType<Seq>(Dialect.Read("x(@a)", new Dictionary<string, Action<Ctx>> { ["a"] = _ => { } })).Items[0]);
+    }
+
+    [Fact]
+    public void Token_classification_edges()
+    {
+        Assert.Equal(new Ref("1a"), Read("1a"));   // not all digits: a word
+        Assert.Equal(new Ref(":"), Read(":"));     // lone colon: a word
+        Assert.Equal(new Seek("x"), Read(":x"));
+        Assert.Equal(new Mark("x"), Read("x:"));
+        Assert.Equal(new Ref("#"), Read("#"));     // '#' at end of text
+        Assert.Equal(new Ref("#a"), Read("#a"));   // '#' not followed by a quote
+        Assert.Equal(new Lit('a'), Read("#\"a\""));
+    }
+
+    [Theory]
+    [InlineData("]", "Unmatched")]
+    [InlineData("[ \"a\"", "Missing ']'")]
+    [InlineData("some", "ended")]
+    [InlineData("some |", "Unexpected '|'")]
+    [InlineData("copy", "'copy' needs a variable")]
+    [InlineData("set", "'set' needs a variable")]
+    [InlineData("quote", "'quote' needs a value")]
+    [InlineData("quote [", "'quote' cannot take '['")]
+    [InlineData("#\"ab\"", "must be one character")]
+    [InlineData("(@x", "Missing ')'")]
+    [InlineData("\"abc", "Unterminated")]
+    [InlineData("(x)", "(x)")]
+    public void Errors_explain_themselves(string text, string fragment)
+    {
+        var ex = Assert.Throws<FormatException>(() => Dialect.Read(text));
+        Assert.Contains(fragment, ex.Message);
+    }
+
+    [Fact]
+    public void Lookup_errors_name_the_missing_thing()
+    {
+        Assert.Contains("'nope'", Assert.Throws<KeyNotFoundException>(() => Parser.Parse("a", Ref("nope"))).Message);
+        Assert.Contains("'nope'", Assert.Throws<KeyNotFoundException>(() => Parser.Parse("a", Seek("nope"))).Message);
+        Assert.Contains("(@nope)", Assert.Throws<KeyNotFoundException>(() => Dialect.Read("(@nope)")).Message);
+        Assert.Contains("Mystery", Assert.Throws<NotSupportedException>(() => Parser.Parse("a", new Mystery())).Message);
+    }
+
+    private sealed record Mystery : Rule;
+}
+
+public class SemanticsTests
+{
+    [Fact]
+    public void Captures_and_actions_are_not_rolled_back_when_a_branch_later_fails()
+    {
+        // As in REBOL, side effects of a branch that matched part-way stay after backtracking.
+        var hits = 0;
+        var acts = new Dictionary<string, Action<Ctx>> { ["hit"] = _ => hits++ };
+        var rule = Dialect.Read("[copy x \"a\" (@hit) \"z\"] | \"a\"", acts);
+        var result = Parser.Parse("a", rule);
+        Assert.True(result.Matched);
+        Assert.Equal("a", result.Vars["x"]);
+        Assert.Equal(1, hits);
+    }
+
+    [Theory]
+    [InlineData("1+2*3", true)]
+    [InlineData("(1+2)*3", true)]
+    [InlineData("2*(3+(4-1))", true)]
+    [InlineData("1+*2", false)]
+    [InlineData("(1+2", false)]
+    [InlineData("", false)]
+    public void Sample_arithmetic_grammar(string input, bool expected)
+    {
+        var rules = new Dictionary<string, Rule>
+        {
+            ["expr"] = Ref("term") + Any(CharIn("+-") + Ref("term")),
+            ["term"] = Ref("factor") + Any(CharIn("*/") + Ref("factor")),
+            ["factor"] = Some(Digit) | ("(" + Ref("expr") + ")"),
+        };
+        Assert.Equal(expected, Parser.Parse(input, Ref("expr"), rules).Matched);
+    }
+
+    [Fact]
+    public void Sample_config_lines_are_captured_in_order()
+    {
+        var pairs = new List<(string, string)>();
+        var kv = Dialect.Read(
+            "any [copy k to \"=\" \"=\" copy v [to newline | to end] (@pair) [newline | end]]",
+            new Dictionary<string, Action<Ctx>>
+            {
+                ["pair"] = c => pairs.Add(((string)c.Vars["k"]!, (string)c.Vars["v"]!)),
+            });
+        Assert.True(Parser.Parse("name=joshua\nlang=C#\nmode=parse", kv).Matched);
+        Assert.Equal([("name", "joshua"), ("lang", "C#"), ("mode", "parse")], pairs);
+    }
+}

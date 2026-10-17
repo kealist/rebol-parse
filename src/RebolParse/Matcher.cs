@@ -42,8 +42,10 @@ internal sealed class Matcher(ISeries s, Ctx ctx)
     public bool Match(Rule rule, ref int pos)
     {
         var start = pos;
+        var wasBreaking = ctx.BreakRequested;
         if (Step(rule, ref pos)) return true;
         pos = start;
+        ctx.BreakRequested = wasBreaking; // a break inside a failed branch is abandoned with it
         return false;
     }
 
@@ -152,6 +154,7 @@ internal sealed class Matcher(ISeries s, Ctx ctx)
         while (rep.Max < 0 || count < rep.Max)
         {
             var before = pos;
+            ctx.BreakRequested = false; // drop a stale break from outside this loop or a failed branch
             if (!Match(rep.Body, ref pos)) break;
             count++;
             if (ctx.BreakRequested) { ctx.BreakRequested = false; break; }
