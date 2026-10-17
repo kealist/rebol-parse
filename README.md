@@ -8,7 +8,7 @@ A REBOL-style `parse` dialect for C#. Rules match strings (character by characte
 dotnet add package RebolParse
 ```
 
-Targets .NET 8 and .NET 10.
+Targets .NET 10.
 
 ## Example
 
