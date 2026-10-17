@@ -30,6 +30,8 @@ var kv = Dialect.Read("copy k to \"=\" \"=\" copy v to end (@done)",
 
 Semantics follow REBOL: ordered choice (`|`) with backtracking, greedy repeats, and a parse succeeds only if the whole input is consumed (pass `partial: true` to allow a prefix match).
 
+New to parse? Work through the [tutorial](docs/Tutorial.md): fifteen lessons with exercises and solutions.
+
 ## Keyword map
 
 | REBOL | Fluent | Notes |
