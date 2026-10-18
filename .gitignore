@@ -6,3 +6,4 @@ obj/
 .idea/
 BenchmarkDotNet.Artifacts/
 TestResults/
+artifacts/

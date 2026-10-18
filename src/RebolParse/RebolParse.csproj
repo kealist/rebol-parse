@@ -35,8 +35,16 @@
     <InternalsVisibleTo Include="RebolParse.Tests" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
-  </ItemGroup>
+  <!-- The README on nuget.org has no repository to resolve relative links against, so the packed copy points at GitHub. -->
+  <Target Name="MakePackageReadme" BeforeTargets="_GetPackageFiles;GenerateNuspec" Condition="'$(IsPackable)' != 'false'">
+    <PropertyGroup>
+      <_Readme>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\..\README.md'))</_Readme>
+      <_Readme>$([System.Text.RegularExpressions.Regex]::Replace('$(_Readme)', '\]\((?!https?:|#|mailto:)([^)]+)\)', ']($(PackageProjectUrl)/blob/main/$1)'))</_Readme>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)PackageReadme.md" Lines="$(_Readme)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <None Include="$(IntermediateOutputPath)PackageReadme.md" Pack="true" PackagePath="README.md" />
+    </ItemGroup>
+  </Target>
 
 </Project>

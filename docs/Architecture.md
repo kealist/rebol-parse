@@ -135,7 +135,7 @@ Which rules must be buffered is decided at compile time. A rule that contains an
 
 Two practices have paid off: **randomized differential tests** (two engines, one rule, compare everything) catch the bugs hand-written tests miss, and **mutation checks** (delete a guard, confirm a test fails) show whether a test really protects what it claims to. Random rule generators must avoid rules that legitimately never terminate, such as an insert followed by a failure inside a loop that counts text growth as progress; the generators say so in their comments.
 
-Run `dotnet test`. Benchmarks are in `benchmarks/RebolParse.Benchmarks` (`dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"`), and `--job short` is enough to see a regression.
+Run `dotnet test`. Cutting a release is covered in [Releasing](Releasing.md). Benchmarks are in `benchmarks/RebolParse.Benchmarks` (`dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"`), and `--job short` is enough to see a regression.
 
 ## Adding a keyword
 
