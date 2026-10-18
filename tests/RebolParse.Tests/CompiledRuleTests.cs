@@ -600,4 +600,42 @@ public class CompiledRuleTests
         var shallow = Enumerable.Range(0, 5).ToDictionary(i => $"r{i}", i => i == 4 ? (Rule)Lit("a") : Seq(Ref($"r{i + 1}"), Ref($"r{i + 1}"))).Compiled();
         Assert.True(Parser.Parse(new string('a', 16), Ref("r0"), shallow).Matched);
     }
+
+    [Fact]
+    public void A_rule_written_into_itself_agrees_at_every_nesting_depth()
+    {
+        var table = Dialect.ReadGrammar("""
+            group = "(" any group ")"
+            item  = some digit | list
+            list  = "[" opt [item any ["," item]] "]"
+            a     = "x" b | "y"
+            b     = "z" a | "w"
+            """);
+        var compiled = table.Compiled();
+        // balanced, unbalanced and almost balanced, from no nesting to well past the number of times a rule is written in
+        var inputs = new List<string> { "", "(", ")", "()", ")(" };
+        for (var depth = 1; depth <= 9; depth++)
+        {
+            var open = new string('(', depth);
+            var close = new string(')', depth);
+            inputs.Add(open + close);
+            inputs.Add(open + close + "()");
+            inputs.Add(open + close[1..]);
+            inputs.Add(open[1..] + close);
+            inputs.Add(open + "()" + close);
+            inputs.Add(string.Concat(Enumerable.Repeat("[", depth)) + "7" + string.Concat(Enumerable.Repeat("]", depth)));
+            inputs.Add(string.Concat(Enumerable.Repeat("[1,", depth)) + "[]" + string.Concat(Enumerable.Repeat("]", depth)));
+            inputs.Add(string.Concat(Enumerable.Repeat("xz", depth)) + "y");
+            inputs.Add(string.Concat(Enumerable.Repeat("xz", depth)) + "xw");
+            inputs.Add(string.Concat(Enumerable.Repeat("xz", depth)) + "x");
+        }
+        foreach (var input in inputs)
+            foreach (var start in new[] { "group", "list", "a", "b" })
+                foreach (var partial in new[] { true, false })
+                {
+                    var x = Describe(Parser.Parse(input, Ref(start), table, partial));
+                    var y = Describe(Parser.Parse(input, Ref(start), compiled, partial));
+                    Assert.True(x == y, $"{start} on '{input}' partial={partial}\n interpreter {x}\n compiled    {y}");
+                }
+    }
 }

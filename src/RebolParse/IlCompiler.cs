@@ -341,44 +341,26 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
     /// <summary>The names of the rules a rule calls.</summary>
     public static string[] CallsIn(Rule rule) => Parts(rule).OfType<Ref>().Select(r => r.Name).Distinct().ToArray();
 
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IReadOnlyDictionary<string, Rule>, HashSet<string>> RecursiveRules = new();
-
-    // the rules that can reach themselves through the rules they call
-    private static HashSet<string> Recursive(IReadOnlyDictionary<string, Rule> rules) => RecursiveRules.GetValue(rules, table =>
-    {
-        var calls = table.ToDictionary(kv => kv.Key, kv => CallsIn(kv.Value));
-        var found = new HashSet<string>();
-        foreach (var name in table.Keys)
-        {
-            var seen = new HashSet<string>();
-            var todo = new Stack<string>(calls[name]);
-            while (todo.Count > 0)
-            {
-                var next = todo.Pop();
-                if (next == name) { found.Add(name); break; }
-                if (seen.Add(next) && calls.TryGetValue(next, out var onward))
-                    foreach (var n in onward) todo.Push(n);
-            }
-        }
-        return found;
-    });
-
-    private const int InlineLimit = 64;     // the most nodes a rule can have to be written into another
-    private const int InlineBudget = 256;   // the most nodes written into one rule in all
+    private const int UnrollDepth = 3;     // how many times a rule is written into itself (or into rules that call it back)
+    private const int InlineLimit = 32;     // the most nodes a rule can have to be written into another
+    private const int InlineBudget = 96;    // the most nodes written into one rule in all; compile time grows with it
 
     /// <summary>
-    /// Replace calls to small rules that do not call themselves, directly or through others, with the rules themselves, so
-    /// the generated code has no call to make. Which rule a name means depends on the table, so this is done per table.
+    /// Replace calls to small rules with the rules themselves, so the generated code has no call to make. A rule is written
+    /// into itself at most once, which bounds what a rule that calls itself, directly or through others, can grow to. Which rule a name means depends on the table, so this is done per table.
     /// </summary>
     public static Rule InlineCalls(Rule rule, IReadOnlyDictionary<string, Rule> rules, bool buffered)
     {
-        var recursive = Recursive(rules);
         var editing = buffered ? new HashSet<string>() : RulesReachingEdits(rules);   // text that is edited cannot be followed from a string
         var budget = InlineBudget;
+        // A rule that calls itself is written into itself once, so a level of nesting costs one call where it cost two. The
+        // rules being written in are not written in again, which is what stops a rule that calls itself, directly or through
+        // others, from growing for ever.
+        var active = new Dictionary<string, int>();
 
         Rule Visit(Rule r) => r switch
         {
-            Ref call when CanInline(call.Name, out var body) => Visit(body),
+            Ref call when CanInline(call.Name, out var body) => Enter(call.Name, body),
             Seq s => new Seq([.. s.Items.Select(Visit)]),
             Alt a => new Alt([.. a.Items.Select(Visit)]),
             Repeat x => x with { Body = Visit(x.Body) },
@@ -397,10 +379,17 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             _ => r,
         };
 
+        Rule Enter(string name, Rule body)
+        {
+            active[name] = active.GetValueOrDefault(name) + 1;
+            try { return Visit(body); }
+            finally { active[name]--; }
+        }
+
         bool CanInline(string name, out Rule body)
         {
             body = null!;
-            if (!rules.TryGetValue(name, out var found) || recursive.Contains(name) || editing.Contains(name)) return false;
+            if (!rules.TryGetValue(name, out var found) || active.GetValueOrDefault(name) >= UnrollDepth || editing.Contains(name)) return false;
             var unwrapped = Unwrap(found);
             var size = Parts(unwrapped).Count();
             if (size > InlineLimit || size > budget || !Supports(unwrapped)) return false;
