@@ -106,7 +106,9 @@ Which rules must be buffered is decided at compile time. A rule that contains an
 
 **Named rules.** A `Ref` becomes a call through a `RefSite`, which looks the target up once per rule table and caches it behind an immutable holder (so concurrent use is safe). A compiled target is called directly, in its buffered variant when the caller is buffered. An interpreted target is run through its node, from a span over the string or over the buffer. After a call from string-reading code, the engine is checked for edits.
 
-**What it does not do.** There is no first-character dispatch in the generated choice (it was tried and measured no better on the JSON grammar) and no inlining across `Ref`. Grammars made of many tiny rules therefore gain little: see the [benchmarks](Benchmarks.md#against-net-regex). A buffered rule pays one copy of the input when it starts.
+**Inlining.** Which rule a name means is only known from the rule table, so the generated code for a rule that calls others is made per table (`IlNode.Pick` keeps one per table, made on first use). `IlCompiler.InlineCalls` first rewrites the rule: a call to a rule of up to 64 nodes that cannot reach itself, directly or through others, is replaced by that rule's body, up to 256 nodes per caller so that rules which each call the next level twice cannot blow up. A rule that edits is not written into code that reads the original string. On the JSON grammar this removes the calls to the whitespace, string and number rules, which are most of them, and cuts the skip-to-property lookups by 25-45%. Recursive rules (`value`, `array`, `object` and `member` there) are still calls.
+
+**What it does not do.** There is no first-character dispatch in the generated choice (it was tried and measured no better on the JSON grammar) and nothing for deep recursion, where every level is still a call between generated methods: see the [benchmarks](Benchmarks.md#against-net-regex). A buffered rule pays one copy of the input when it starts.
 
 ## Invariants worth knowing
 
@@ -150,6 +152,6 @@ Run `dotnet test`. Benchmarks are in `benchmarks/RebolParse.Benchmarks` (`dotnet
 
 - Recursion depth is bounded by the stack, and left recursion recurses forever (documented).
 - Backtracking has no memoization, so a pathological grammar can be exponential.
-- The IL back end could inline small non-recursive rules to help grammars of many tiny rules, and could read the original string for a buffered rule until its first edit instead of copying the input up front.
+- The IL back end could unroll or iterate recursion to help deep nesting, and could read the original string for a buffered rule until its first edit instead of copying the input up front.
 - Block input has no compiled path.
 - A moving gap costs a tail copy whenever a rule rewinds behind an edit; a piece table would avoid that at the price of a non-contiguous text.
