@@ -106,7 +106,7 @@ Which rules must be buffered is decided at compile time. A rule that contains an
 
 **Named rules.** A `Ref` becomes a call through a `RefSite`, which looks the target up once per rule table and caches it behind an immutable holder (so concurrent use is safe). A compiled target is called directly, in its buffered variant when the caller is buffered. An interpreted target is run through its node, from a span over the string or over the buffer. After a call from string-reading code, the engine is checked for edits.
 
-**What it does not do.** There is no first-character dispatch in the generated choice (it was tried and measured no better on the JSON grammar) and no inlining across `Ref`. Grammars made of many tiny rules therefore gain little: see the [benchmarks](Benchmarks.md#compiled-to-il). A buffered rule pays one copy of the input when it starts.
+**What it does not do.** There is no first-character dispatch in the generated choice (it was tried and measured no better on the JSON grammar) and no inlining across `Ref`. Grammars made of many tiny rules therefore gain little: see the [benchmarks](Benchmarks.md#against-net-regex). A buffered rule pays one copy of the input when it starts.
 
 ## Invariants worth knowing
 

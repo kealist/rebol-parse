@@ -1,81 +1,74 @@
-# Benchmarks: RebolParse vs Regex
+# Benchmarks: RebolParse vs Regex and System.Text.Json
 
-BenchmarkDotNet, `--job short` (3 iterations, so treat the numbers as rough and expect run-to-run noise of 10-30%). Figures are from the run after the compiled-node engine landed. Apple M4 Pro, .NET 10.0.6, Release build. Each benchmark checks in setup that both engines produce the same answer before timing.
+BenchmarkDotNet, `--job short` (3 iterations, so treat the numbers as rough and expect run-to-run noise of 10-30%; the regex rows in particular moved by that much between runs). Apple M4 Pro, .NET 10.0.6, Release build. Each benchmark checks in setup that every engine produces the same answer before timing.
 
-Parse rules are built once and reused, as `Regex` objects are. Times are the mean of a short run, followed by bytes allocated per call.
+Rules are built once and reused, as `Regex` objects are. Every cell is the mean time, then the bytes allocated per call. **IL** is the same rule after `.Compiled()` (see [Compiling to IL](Reference.md#compiling-to-il)); it is `IsMatch` for the validation rows and `Parse` for the rows that capture or edit.
 
-| Task | Size | Parse | IsMatch | Regex (interpreted) | Regex (compiled) |
-|---|---|---|---|---|---|
-| Validate `555-1234` | 8 chars | 37 ns, 120 B | 31 ns, **0 B** | 47 ns, 0 B | 14 ns, 0 B |
-| Validate comma-separated ints | 100 numbers | 2.1 µs, 120 B | 2.1 µs, **0 B** | 3.1 µs | 1.9 µs |
-| | 10,000 numbers | 212 µs, 120 B | 216 µs, **0 B** | 299 µs | 199 µs |
-| Balanced parens, depth 10 | ~420 chars | 5.8 µs, 230 B | 5.9 µs, **0 B** | 16.5 µs | 4.0 µs |
-| Balanced parens, depth 1000 | ~40 KB | 938 µs, 240 B | 946 µs, **0 B** | 1.62 ms | 385 µs |
-| Capture `key=value` lines | 10 lines | 0.68 µs, 1.9 KB | n/a (captures) | 1.35 µs, 3.2 KB | 0.89 µs, 3.2 KB |
-| | 1,000 lines | 51 µs, 126 KB | n/a (captures) | 152 µs, 305 KB | 88 µs, 305 KB |
-| Extract words | 1 KB | 9.6 µs, 10 KB | n/a (collects) | 15.2 µs, 41 KB | 9.9 µs, 41 KB |
-| | 100 KB | 1.06 ms, 1.05 MB | n/a (collects) | 4.54 ms, 4.07 MB | 4.15 ms, 4.07 MB |
-| Strip digits (`remove` vs `Replace`) | 1 KB | 9.7 µs, 5.4 KB | n/a (edits) | 6.5 µs, 1.4 KB | 4.4 µs, 1.4 KB |
-| | 100 KB | 771 µs, 499 KB | n/a (edits) | 540 µs, 109 KB | 680 µs, 109 KB |
-| Build the matcher | `3 digit "-" 4 digit` | 318 ns (text), 103 ns (fluent) | | 701 ns | 4,138 ns |
+## Against .NET Regex
 
-Building the matcher does not include compiling the rule tree to nodes, which happens on first use and is cached per rule instance.
+| Task | Size | Parse (interpreter) | IsMatch (interpreter) | **IL** | Regex (interpreted) | Regex (compiled) |
+|---|---|---|---|---|---|---|
+| Validate `555-1234` | 8 chars | 39 ns, 128 B | 30 ns, 0 B | **10 ns**, 0 B | 47 ns, 0 B | 14 ns, 0 B |
+| Validate comma-separated ints | 100 numbers | 2.1 µs, 128 B | 2.2 µs, 0 B | **0.35 µs**, 0 B | 4.5 µs, 0 B | 1.9 µs, 0 B |
+| | 10,000 numbers | 209 µs, 128 B | 219 µs, 0 B | **34 µs**, 0 B | 311 µs, 0 B | 199 µs, 0 B |
+| Balanced parens, depth 10 | ~420 chars | 5.9 µs, 230 B | 5.8 µs, 0 B | **2.5 µs**, 0 B | 16.6 µs, 0 B | 3.9 µs, 0 B |
+| Balanced parens, depth 1000 | ~40 KB | 1,125 µs, 240 B | 944 µs, 0 B | 569 µs, 0 B | 1,600 µs, 0 B | **385 µs**, 0 B |
+| Capture `key=value` lines | 10 lines | 0.67 µs, 1.9 KB | n/a (captures) | **0.61 µs**, 1.9 KB | 1.3 µs, 3.2 KB | 0.88 µs, 3.2 KB |
+| | 1,000 lines | 50 µs, 126 KB | n/a (captures) | **47 µs**, 126 KB | 136 µs, 305 KB | 86 µs, 305 KB |
+| Extract words | 1 KB | 10.2 µs, 10.3 KB | n/a (collects) | **5.6 µs**, 10.3 KB | 14.7 µs, 40.7 KB | 15.5 µs, 40.7 KB |
+| | 100 KB | 1,155 µs, 1.05 MB | n/a (collects) | **701 µs**, 1.05 MB | 4,638 µs, 4.07 MB | 4,240 µs, 4.07 MB |
+| Strip digits (`remove` vs `Replace`) | 1 KB | 12.5 µs, 5.5 KB | n/a (edits) | **5.5 µs**, 5.5 KB | 6.6 µs, 1.4 KB | 8.9 µs, 1.4 KB |
+| | 100 KB | 949 µs, 500 KB | n/a (edits) | **446 µs**, 500 KB | 551 µs, 109 KB | 645 µs, 109 KB |
 
-## What the numbers say
+Building the matcher (not including the interpreter's compile to nodes, which happens on first use and is cached per rule instance):
 
-- **Against interpreted regex, RebolParse is now faster or close on everything.** Validation runs at 1.3-1.5x the speed of the interpreted regex, word extraction at 1.6-4.3x, and the recursive grammar at 1.4-3x. Capturing key=value lines is now faster than regex too (2-3x, since the `to` scans and `not X skip` loops compile to vectorized searches).
-- **Against `RegexOptions.Compiled`, which emits IL, it wins on extraction (1-4x) and loses on plain validation (2.7x slower on the phone number, about even on the number list) and on recursion (1.4x slower at depth 10, 3x at depth 1000).** That gap is the cost of a tree of virtual calls against straight-line generated code; closing it would mean generating IL too.
-- **How it got here.** Rules compile once into specialized nodes: a loop over a character class is one tight loop, `to`/`thru` on a literal uses the vectorized `IndexOf`, literal strings use `StartsWith`, and nodes that cannot break, reject, keep or edit skip the backtracking bookkeeping. Text is matched as a `ReadOnlySpan<char>`, so there is no copy of the input and no per-character interface call. Before this step RebolParse was 3-8x slower than regex on these tasks.
-- **`Parser.IsMatch` allocates nothing.** `Parse` allocates about 120 B plus whatever it captures; it never copies input it does not edit.
-- **`remove` is within 1.1-1.4x of `Regex.Replace`.** Edits go through a gap buffer: a removal widens a gap instead of shifting the rest of the text, so a left-to-right sweep moves each character at most once. Before this it was 43x slower on 100 KB (23 ms), because every removal shifted the tail and the loop was quadratic.
-- **Setup cost favours RebolParse.** Reading rule text costs under half of constructing an interpreted regex and a thirteenth of a compiled one.
+| | Time | Allocated |
+|---|---|---|
+| Read `3 digit "-" 4 digit` from text | 317 ns | 1.0 KB |
+| Build it with the fluent API | 97 ns | 400 B |
+| `new Regex(...)` interpreted | 693 ns | 1.9 KB |
+| `new Regex(..., RegexOptions.Compiled)` | 4,118 ns | 8.9 KB |
+| `.Compiled()` and run once (rule already warm) | 245 µs | 25.8 KB |
 
-Pick RebolParse for grammars that are awkward or impossible as regex (recursion, structured block input, rules that capture and edit as they go) and for readability. For a hot loop that only validates flat text, `RegexOptions.Compiled` is still the fastest option.
+### What the numbers say
 
-## Compiled to IL
+- **The interpreter** is faster than interpreted regex on all but one of these tasks (validation 1.5-2x, key=value 2-3x, extraction 1.4-4x, recursion 1.4-3x), and slower on bulk deletion (strip digits, 1.7-1.9x).
+- **IL** is the fastest column on every row but deep recursion. Against `RegexOptions.Compiled` it is 1.4x faster on the phone number, 5.8x on the long number list, 1.6x on shallow recursion, 1.5-1.8x on `key=value`, 2.8-6x on word extraction and 1.4-1.6x on stripping digits. It is 1.5x slower on depth-1000 recursion, where every level is a call between generated methods.
+- **Allocations.** `IsMatch` allocates nothing, interpreted or IL. Captures allocate what they capture, 2-4x less than `Regex.Matches`. Edits are the exception: RebolParse copies the input into an edit buffer, so stripping 100 KB allocates 500 KB where `Regex.Replace` allocates 109 KB.
+- **How it gets there.** Rules compile once into specialized nodes: a loop over a character class is one tight loop, `to`/`thru` on a literal use the vectorized `IndexOf`, `some [not X skip]` is one scan, a choice skips alternatives that cannot start with the next character, and text is matched as a `ReadOnlySpan<char>`. Edits go through a gap buffer, so a left-to-right sweep moves each character at most once. IL removes the per-node calls on top of that.
+- **IL costs time to build.** The first compile in a process takes about 30 ms, mostly loading and warming the expression compiler. After that a small rule takes under a millisecond and the 7-rule JSON grammar about 8 ms. A rule you run once is better left interpreted.
+- **Set-up cost still favours RebolParse** over a compiled regex: reading rule text costs a thirteenth of constructing one.
 
-`rule.Compiled()` (see the [reference](Reference.md#compiling-to-il)) generates IL for a rule, as `RegexOptions.Compiled` does. Same method, same short-job caveats, same inputs as above.
-
-| Task | Size | Interpreter `IsMatch` | **IL** | Regex (interpreted) | Regex (compiled) |
-|---|---|---|---|---|---|
-| Validate `555-1234` | 8 chars | 29.7 ns | **10.0 ns** | 48.4 ns | 13.8 ns |
-| Validate comma-separated ints | 100 numbers | 2,212 ns | **354 ns** | 3,113 ns | 1,896 ns |
-| | 10,000 numbers | 209 µs | **34 µs** | 301 µs | 198 µs |
-| Balanced parens, depth 10 | ~420 chars | 5.8 µs | **2.0 µs** | 17.0 µs | 3.9 µs |
-| Balanced parens, depth 1000 | ~40 KB | 910 µs | **516 µs** | 1,611 µs | 382 µs |
-| JSON skip-to-property, 150 KB | 3 properties | 2,026 µs | **1,122 µs** | n/a | n/a |
-| JSON skip-to-property, early | 3 properties | 3.8 µs | **2.9 µs** | n/a | n/a |
-| JSON skip-to-property, 400 B | 3 properties | 1.9 µs | 2.5 µs | n/a | n/a |
-
-- **Loops and literals gain the most.** A rule that is mostly character tests and repeats compiles to straight-line code with no calls, so validation is 3-6x faster than the interpreter and beats `RegexOptions.Compiled`: 1.4x on the phone number and 5.8x on the long number list.
-- **Recursion gains about 1.8x**, because each `Ref` is still a delegate call. Depth-10 parens now beat compiled regex; depth 1000 is still 1.35x behind.
-- **Grammars made of many tiny rules can come out even.** The 400-byte JSON lookup is a little slower compiled, because each call between rules costs more than the work inside it. It gains once the rules do real work (150 KB).
-- **It costs time to build.** The first compile in a process takes about 30 ms, mostly loading and warming the expression compiler. After that a small rule takes 0.3-0.7 ms and the 7-rule JSON grammar about 8 ms. A rule you run once is better left interpreted.
-- Rules that use `break`, `reject`, `collect`, `keep` or an edit are not compiled; they run on the interpreter and are not slower for having asked.
+Pick RebolParse for grammars that are awkward or impossible as regex (recursion, structured block input, rules that capture and edit as they go) and for readability. For a hot loop over flat text, compile the rule: it is as fast as `RegexOptions.Compiled` or faster on everything above except deep recursion.
 
 ## Reading properties out of JSON: RebolParse vs System.Text.Json
 
-Three properties per call (for example `author.name`, `tags[1]`, `version`), on a 400-byte document and on a 150 KB array of 2,000 records. The RebolParse side uses the grammar from the [JSON sample](../samples/Samples/JsonDemo.cs) in two ways: read the whole document into objects and navigate to the paths, or use a rule that skips straight to each property and copies only its text. Each benchmark checks in setup that every method returns the same three values.
+Three properties per call (for example `author.name`, `tags[1]`, `version`) from a 400-byte document and from arrays of 2,000 records (150 KB) and 200,000 records (11 MB). The RebolParse side uses the grammar from the [JSON sample](../samples/Samples/JsonDemo.cs) two ways: read the whole document into objects and navigate to the paths, or use a rule that skips straight to each property and copies only its text. Each is shown interpreted and compiled to IL. "Start/mid/end" reads the first, middle and last record; "first 3" reads only properties in the first three records, where a parse can stop early.
 
-| Document | `JsonDocument` (string) | `JsonDocument` (UTF-8) | `JsonNode` | RebolParse, full read | RebolParse, skip to property |
+| | 400 B | 150 KB, start/mid/end | 150 KB, first 3 | 11 MB, start/mid/end | 11 MB, first 3 |
 |---|---|---|---|---|---|
-| 400 B | 1.39 µs, 336 B | 1.28 µs, 336 B | 1.86 µs, 2.9 KB | 4.5 µs, 3.3 KB | 2.0 µs, 1.5 KB |
-| 150 KB, properties at start, middle, end | 509 µs, 328 B | 496 µs, 328 B | 641 µs, 574 KB | 2,440 µs, 1.9 MB | 1,933 µs, 1.5 KB |
-| 150 KB, properties in the first 3 records | 507 µs, 312 B | 502 µs, 312 B | 612 µs, 574 KB | 2,431 µs, 1.9 MB | **3.7 µs**, 1.5 KB |
+| `JsonDocument` (string) | 1.4 µs, 336 B | 507 µs, 328 B | 499 µs, 312 B | 51.8 ms, 336 B | 53.3 ms, 312 B |
+| `JsonDocument` (UTF-8 bytes) | 1.3 µs, 336 B | 493 µs, 328 B | 488 µs, 312 B | 52.3 ms, 336 B | 50.1 ms, 312 B |
+| `JsonNode` | 1.8 µs, 2.9 KB | 592 µs, 560 KB | 589 µs, 560 KB | 71.0 ms, 55.2 MB | 70.3 ms, 55.2 MB |
+| RebolParse, full read | 4.3 µs, 3.3 KB | 2,497 µs, 1.77 MB | 2,747 µs, 1.77 MB | 419 ms, 179 MB | 411 ms, 179 MB |
+| RebolParse IL, full read | 3.3 µs, 3.3 KB | 1,775 µs, 1.77 MB | 1,786 µs, 1.77 MB | 349 ms, 179 MB | 341 ms, 179 MB |
+| RebolParse, skip to property | 1.9 µs, 1.5 KB | 1,863 µs, 1.4 KB | 3.1 µs, 1.4 KB | 196 ms, 1.5 KB | 4.2 µs, 1.4 KB |
+| RebolParse IL, skip to property | **1.6 µs**, 1.5 KB | **1,158 µs**, 1.4 KB | **2.2 µs**, 1.4 KB | **113 ms**, 1.5 KB | **3.0 µs**, 1.4 KB |
 
-- **If you need the whole document, `System.Text.Json` is 3-5x faster.** It is a hand-tuned UTF-8 state machine, and `JsonDocument` does not even build objects: it records offsets into the buffer. RebolParse's grammar-driven reader runs at about 45-60 MB/s on this document, against several hundred MB/s on flat text, because a recursive grammar pays a few virtual calls for every value.
-- **Skipping to a property is closer.** On the small document it is 1.4x `JsonDocument`; on the large one, 3.8x, since it still has to step over every value before the property it wants.
-- **A parse can stop early; `JsonDocument` cannot.** It validates and indexes the whole document before you can ask for anything. The skip rule stops as soon as it has the last property, so reading from the first few records takes 3.7 µs against 507 µs, 137x faster. This is the one case where RebolParse wins, and it needs a partial parse.
-- **Building objects is a minor cost.** The full read allocates 1.9 MB and the skip rules 1.5 KB, but the time is only 25% different. Most of it is matching.
+(The `System.Text.Json` figures are from the full run and the RebolParse figures from the run after the last compiler change; that change does not touch `System.Text.Json`.)
+
+- **If you need the whole document, `System.Text.Json` is 2.5-8x faster.** It is a hand-tuned UTF-8 state machine, and `JsonDocument` does not even build objects: it records offsets into the buffer. RebolParse's grammar-driven reader, compiled, runs at 30-60 MB/s on this document.
+- **Skipping to a property is closer.** Compiled, it takes 1.1x the time of `JsonDocument` on the small document and 2.2-2.3x on the large ones, since it still has to step over every value before the property it wants.
+- **A parse can stop early; `JsonDocument` cannot.** It validates and indexes the whole document before you can ask for anything: 500 µs for 150 KB and 52 ms for 11 MB, even to read the first record. The skip rule stops as soon as it has the last property: 2.2 µs and 3.0 µs. At 11 MB that is about 17,000 times faster. This is the one case where RebolParse wins outright, and it needs a partial parse.
+- **Building objects is a minor cost.** The full read allocates 179 MB for the 11 MB document and the skip rules 1.5 KB, but the skip rule is only about 2-3x faster, so most of the time is matching, not allocation.
 - **For ordinary JSON, use `System.Text.Json`.** The sample shows that a grammar is a few lines and gives precise errors, not that it competes with a dedicated reader.
-
-**What tuning did.** The first version of this comparison took 4.0 ms (large, skip) and 3.9 ms (large, full read). Two engine changes brought it to 1.9 and 2.4 ms. A loop of the form `some [not X skip]` with one-character `X` now compiles to a single scan (`IndexOfAny` when `X` is plain characters). A choice now knows which characters each alternative can start with and skips the ones that cannot match the next character, which removes three or four failed attempts per JSON value. Writing the string rule as `any [some [not ["^\"" | "\"] skip] | "\" skip]` instead of one character at a time lets it use the scan.
 
 ## Run it
 
 ```bash
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*StripDigits*" --job short
+dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*JsonLookup*" --job short
 ```
 
-Drop `--job short` for a precise run; the full job takes several times longer.
+Drop `--job short` for a precise run; the full job takes several times longer. The 11 MB JSON cases take a few minutes.

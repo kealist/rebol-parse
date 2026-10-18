@@ -135,7 +135,7 @@ var rules = Dialect.ReadGrammar(grammarText).Compiled();   // every rule in the 
 Parser.IsMatch("555-1234", rule);
 ```
 
-`Compiled()` returns a rule that generates IL the first time it runs, as `RegexOptions.Compiled` does, and is then several times faster on loops and literals ([benchmarks](Benchmarks.md#compiled-to-il)). It matches exactly what the interpreter matches, down to the position, the captured values and the edited text.
+`Compiled()` returns a rule that generates IL the first time it runs, as `RegexOptions.Compiled` does, and is then several times faster on loops and literals ([benchmarks](Benchmarks.md#against-net-regex)). It matches exactly what the interpreter matches, down to the position, the captured values and the edited text.
 
 - **What compiles:** every keyword, for string input. That includes `copy`, `set`, `collect`/`keep`, `break`/`reject`, `insert`/`change`/`remove`, marks, actions, `if` and named rules.
 - **Block input** always uses the interpreter, so `Compiled()` is harmless there and changes nothing. `((CompiledRule)rule).IsNative` is `true` when a rule runs as IL.
