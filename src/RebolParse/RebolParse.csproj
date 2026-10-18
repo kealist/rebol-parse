@@ -9,7 +9,7 @@
 
   <PropertyGroup Label="Package">
     <PackageId>RebolParse</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.1.2</Version>
     <Authors>kealist</Authors>
     <Description>A REBOL-style parse dialect for C#. Match strings or lists of values with a fluent rule builder or REBOL-style rule text, with captures, marks, recursion and named actions.</Description>
     <PackageTags>rebol;parse;parser;dsl;grammar;peg;dialect</PackageTags>
