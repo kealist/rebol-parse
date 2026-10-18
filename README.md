@@ -14,7 +14,7 @@ What you get:
 - **Errors you can locate.** You can parse a file line by line, report line 14, and still load the other lines. The INI sample does this.
 - **One rule set for text and data.** The same rules match characters in a string or items in a list, including nested lists.
 - **Safe to load from outside.** Rule text can come from a config file or a user. It cannot run code. It can only call delegates you registered.
-- **Speed that is easy to check.** Interpreted, it is faster than the interpreted .NET `Regex` on most of the benchmark tasks and slower on one (bulk deletion). With `.Compiled()`, validating a phone number takes about 10 ns against 14 ns for a compiled `Regex`, and a long list of numbers about 5 times faster. The [benchmarks](docs/Benchmarks.md) show the losses too.
+- **Speed that is easy to check.** Interpreted, it is faster than the interpreted .NET `Regex` on most of the benchmark tasks and slower on one (bulk deletion). With `.Compiled()`, validating a phone number takes about 11 ns against 14 ns for a compiled `Regex`, and a long list of numbers about 5 times faster. The [benchmarks](docs/Benchmarks.md) show the losses too.
 - **Tested against itself.** The library has 100% line and branch coverage, and random rules are run through the string engine, the list engine and the IL compiler, which must all agree.
 
 When another tool is the better choice:
