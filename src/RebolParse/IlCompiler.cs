@@ -117,7 +117,7 @@ internal sealed class RefSite(string name)
         var b = bound;
         if (b == null || !ReferenceEquals(b.Rules, rules))
         {
-            if (!rules.TryGetValue(name, out var rule)) throw new KeyNotFoundException($"Undefined rule '{name}'.");
+            if (!rules.TryGetValue(name, out var rule)) throw new KeyNotFoundException(Errors.UndefinedRule(name));
             bound = b = new Bound(rules, Compiler.Get(rule));
         }
         return b;

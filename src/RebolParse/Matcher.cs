@@ -370,7 +370,7 @@ internal sealed class Matcher
 
             case Ref r:
                 if (!ctx.Rules.TryGetValue(r.Name, out var target))
-                    throw new KeyNotFoundException($"Undefined rule '{r.Name}'.");
+                    throw new KeyNotFoundException(Errors.UndefinedRule(r.Name));
                 return Match(target, ref pos);
 
             case Mark m:

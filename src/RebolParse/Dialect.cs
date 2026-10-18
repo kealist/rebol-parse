@@ -136,6 +136,7 @@ public static class Dialect
                 var min = int.Parse(tok.Text);
                 var max = min;
                 if (i < t.Count && t[i].Kind == K.Int) max = int.Parse(t[i++].Text);
+                if (i >= t.Count) throw new FormatException($"The count {tok.Text} needs a rule after it, like '{tok.Text} digit'.");
                 return new Repeat(ReadItem(t, ref i, acts), min, max);
             case K.Word:
                 return ReadWord(tok.Text, t, ref i, acts);
@@ -144,43 +145,50 @@ public static class Dialect
         }
     }
 
+    // the rule a keyword applies to; a keyword at the end of the rule has nothing to apply to
+    private static Rule Operand(string keyword, List<Token> t, ref int i, Bindings acts)
+    {
+        if (i >= t.Count) throw new FormatException($"'{keyword}' needs a rule after it.");
+        return ReadItem(t, ref i, acts);
+    }
+
     private static Rule ReadWord(string w, List<Token> t, ref int i, Bindings acts)
     {
         switch (w.ToLowerInvariant())
         {
-            case "some": return new Repeat(ReadItem(t, ref i, acts), 1, -1);
-            case "any": return new Repeat(ReadItem(t, ref i, acts), 0, -1);
-            case "opt": return new Repeat(ReadItem(t, ref i, acts), 0, 1);
-            case "while": return new Repeat(ReadItem(t, ref i, acts), 0, -1);
+            case "some": return new Repeat(Operand(w, t, ref i, acts), 1, -1);
+            case "any": return new Repeat(Operand(w, t, ref i, acts), 0, -1);
+            case "opt": return new Repeat(Operand(w, t, ref i, acts), 0, 1);
+            case "while": return new Repeat(Operand(w, t, ref i, acts), 0, -1);
             case "ahead":
-            case "and": return new Ahead(ReadItem(t, ref i, acts));
-            case "not": return new Not(ReadItem(t, ref i, acts));
-            case "to": return new To(ReadItem(t, ref i, acts));
-            case "thru": return new Thru(ReadItem(t, ref i, acts));
-            case "into": return new Into(ReadItem(t, ref i, acts));
+            case "and": return new Ahead(Operand(w, t, ref i, acts));
+            case "not": return new Not(Operand(w, t, ref i, acts));
+            case "to": return new To(Operand(w, t, ref i, acts));
+            case "thru": return new Thru(Operand(w, t, ref i, acts));
+            case "into": return new Into(Operand(w, t, ref i, acts));
             case "quote": return ReadQuoted(t, ref i);
-            case "copy": return new Copy(ReadVarName(t, ref i, "copy"), ReadItem(t, ref i, acts));
-            case "set": return new Set(ReadVarName(t, ref i, "set"), ReadItem(t, ref i, acts));
+            case "copy": return new Copy(ReadVarName(t, ref i, "copy"), Operand(w, t, ref i, acts));
+            case "set": return new Set(ReadVarName(t, ref i, "set"), Operand(w, t, ref i, acts));
             case "charset":
                 if (i >= t.Count || t[i].Kind != K.Str) throw new FormatException("'charset' needs a string like \"a-z0-9_\".");
                 return P.Chars(t[i++].Text);
             case "insert": return new Insert(ReadValue(t, ref i, "insert"));
-            case "remove": return new Remove(ReadItem(t, ref i, acts));
+            case "remove": return new Remove(Operand(w, t, ref i, acts));
             case "keep":
                 if (i < t.Count && t[i].Kind == K.Paren) return new KeepValue(BindValue(t[i++].Text, acts));
                 if (i < t.Count && t[i].Kind == K.Word && t[i].Text.Equals("pick", StringComparison.OrdinalIgnoreCase))
                 {
                     i++;
-                    return new KeepPick(ReadItem(t, ref i, acts));
+                    return new KeepPick(Operand(w, t, ref i, acts));
                 }
-                return new Keep(ReadItem(t, ref i, acts));
+                return new Keep(Operand(w, t, ref i, acts));
             case "if":
                 if (i >= t.Count || t[i].Kind != K.Paren) throw new FormatException("'if' needs a condition like (@name).");
                 var cond = BindValue(t[i++].Text, acts);
                 return new If(ctx => cond(ctx) switch { bool b => b, null => false, _ => true });
-            case "collect": return new Collect(ReadVarName(t, ref i, "collect"), ReadItem(t, ref i, acts));
+            case "collect": return new Collect(ReadVarName(t, ref i, "collect"), Operand(w, t, ref i, acts));
             case "change":
-                var body = ReadItem(t, ref i, acts);
+                var body = Operand(w, t, ref i, acts);
                 return new Change(body, ReadValue(t, ref i, "change"));
         }
         return Builtins.TryGetValue(w, out var b) ? b : new Ref(w);

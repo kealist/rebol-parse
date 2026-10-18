@@ -8,6 +8,13 @@ namespace RebolParse;
 /// shifts it in place after that. One instance is reused per thread by
 /// <see cref="Parser.IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/>.
 /// </summary>
+internal static class Errors
+{
+    /// <summary>A bare word is a reference to a named rule, which is not what someone who forgot the quotes meant.</summary>
+    public static string UndefinedRule(string name) =>
+        $"Undefined rule '{name}'. A bare word in a rule names another rule, so write literal text in quotes: \"{name}\".";
+}
+
 internal sealed class TextEngine
 {
     public bool IgnoreCase;
@@ -874,7 +881,7 @@ internal sealed class RefNode(string name) : Node
         var rules = e.Ctx.Rules;
         if (!ReferenceEquals(rules, lastRules))
         {
-            if (!rules.TryGetValue(name, out var rule)) throw new KeyNotFoundException($"Undefined rule '{name}'.");
+            if (!rules.TryGetValue(name, out var rule)) throw new KeyNotFoundException(Errors.UndefinedRule(name));
             target = Compiler.Get(rule);
             lastRules = rules;
         }

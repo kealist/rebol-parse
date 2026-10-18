@@ -556,7 +556,25 @@ public class MutationKillerTests
     [Theory]
     [InlineData("]", "Unmatched")]
     [InlineData("[ \"a\"", "Missing ']'")]
-    [InlineData("some", "ended")]
+    [InlineData("some", "'some' needs a rule after it")]
+    [InlineData("any", "'any' needs a rule after it")]
+    [InlineData("opt", "'opt' needs a rule after it")]
+    [InlineData("while", "'while' needs a rule after it")]
+    [InlineData("ahead", "'ahead' needs a rule after it")]
+    [InlineData("and", "'and' needs a rule after it")]
+    [InlineData("not", "'not' needs a rule after it")]
+    [InlineData("to", "'to' needs a rule after it")]
+    [InlineData("thru", "'thru' needs a rule after it")]
+    [InlineData("into", "'into' needs a rule after it")]
+    [InlineData("remove", "'remove' needs a rule after it")]
+    [InlineData("keep", "'keep' needs a rule after it")]
+    [InlineData("keep pick", "'keep' needs a rule after it")]
+    [InlineData("copy x", "'copy' needs a rule after it")]
+    [InlineData("set x", "'set' needs a rule after it")]
+    [InlineData("collect x", "'collect' needs a rule after it")]
+    [InlineData("change", "'change' needs a rule after it")]
+    [InlineData("3", "The count 3 needs a rule after it")]
+    [InlineData("2 4", "The count 2 needs a rule after it")]
     [InlineData("some |", "Unexpected '|'")]
     [InlineData("copy", "'copy' needs a variable")]
     [InlineData("set", "'set' needs a variable")]
@@ -576,6 +594,10 @@ public class MutationKillerTests
     public void Lookup_errors_name_the_missing_thing()
     {
         Assert.Contains("'nope'", Assert.Throws<KeyNotFoundException>(() => Parser.Parse("a", Ref("nope"))).Message);
+        // the usual cause is text without its quotes, so the message says so
+        Assert.Contains("write literal text in quotes: \"hello\"", Assert.Throws<KeyNotFoundException>(() => Parser.Parse("hello", Dialect.Read("hello"))).Message);
+        Assert.Contains("in quotes", Assert.Throws<KeyNotFoundException>(() => Parser.Parse("hello", Dialect.Read("hello").Compiled())).Message);
+        Assert.Contains("in quotes", Assert.Throws<KeyNotFoundException>(() => Parser.Parse(new List<object> { "hello" }, Dialect.Read("hello"))).Message);
         Assert.Contains("'nope'", Assert.Throws<KeyNotFoundException>(() => Parser.Parse("a", Seek("nope"))).Message);
         Assert.Contains("(@nope)", Assert.Throws<KeyNotFoundException>(() => Dialect.Read("(@nope)")).Message);
         Assert.Contains("Mystery", Assert.Throws<NotSupportedException>(() => Parser.Parse("a", new Mystery())).Message);

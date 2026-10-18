@@ -384,11 +384,11 @@ public class FeatureTests
     [InlineData("insert [", "'insert' cannot take '['")]
     [InlineData("change \"a\"", "'change' needs a value")]
     [InlineData("change \"a\" |", "'change' cannot take '|'")]
-    [InlineData("change", "ended")]
-    [InlineData("remove", "ended")]
-    [InlineData("keep", "ended")]
+    [InlineData("change", "needs a rule after it")]
+    [InlineData("remove", "needs a rule after it")]
+    [InlineData("keep", "needs a rule after it")]
     [InlineData("collect", "'collect' needs a variable")]
-    [InlineData("collect x", "ended")]
+    [InlineData("collect x", "needs a rule after it")]
     public void New_keywords_report_malformed_rules(string text, string fragment)
     {
         var ex = Assert.Throws<FormatException>(() => Dialect.Read(text));

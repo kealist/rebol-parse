@@ -10,23 +10,40 @@ A scratch file is the easiest place to experiment. From the repo root:
 dotnet new console -o ../rebol-scratch && dotnet add ../rebol-scratch reference src/RebolParse
 ```
 
-Every lesson uses this helper. Paste it into `../rebol-scratch/Program.cs` and run it with `dotnet run --project ../rebol-scratch`:
+Every lesson uses this helper. Replace the contents of `../rebol-scratch/Program.cs` with it and run it with `dotnet run --project ../rebol-scratch`:
 
 ```csharp
 using RebolParse;
 using static RebolParse.P;
 
+// Parse each input and show whether it matched, plus anything the rule captured or edited.
 static void Try(string rule, params string[] inputs)
 {
     var r = Dialect.Read(rule);
     foreach (var s in inputs)
-        Console.WriteLine($"{(Parser.Parse(s, r).Matched ? "match   " : "no match")}  \"{s}\"");
+    {
+        var result = Parser.Parse(s, r);
+        var extra = result.Vars.Select(v => $"{v.Key}={Show(v.Value)}").ToList();
+        if (result.Output is string edited && edited != s) extra.Add($"output={Show(edited)}");
+        Console.WriteLine($"{(result.Matched ? "match   " : "no match")}  {Show(s)}  {string.Join("  ", extra)}");
+    }
 }
+
+static string Show(object? value) => value switch
+{
+    null => "null",
+    string text => $"\"{text}\"",
+    char c => $"'{c}'",
+    System.Collections.IEnumerable items => "[" + string.Join(", ", items.Cast<object?>().Select(Show)) + "]",
+    _ => value.ToString()!,
+};
 
 Try("\"hello\"", "hello", "hello!", "Hello");
 ```
 
-In your own code you will mostly write rules as C# strings. In this tutorial a rule is shown as plain text, and you wrap it in quotes yourself.
+It prints `match` or `no match` for each input, then the variables the rule captured and the edited text, if there are any. In your own code you will mostly write rules as C# strings. In this tutorial a rule is shown as plain text, and you wrap it in quotes yourself (which means escaping the quotes inside it, as the line above does). A project made this way is a Debug build, so leave timings to lesson 16 and `dotnet run -c Release`.
+
+Snippets that show a value in a comment, like `Parser.Parse("hello", rule).Matched;   // true`, are written as expressions. To run one, wrap it in `Console.WriteLine(...)`.
 
 ---
 
@@ -35,7 +52,8 @@ In your own code you will mostly write rules as C# strings. In this tutorial a r
 A rule is a description of what input looks like. `Parser.Parse(input, rule)` answers yes or no.
 
 ```csharp
-Parser.Parse("hello", Dialect.Read("\"hello\"")).Matched;   // true
+var rule = Dialect.Read("\"hello\"");
+Parser.Parse("hello", rule).Matched;   // true
 ```
 
 If you only need the yes or no, `Parser.IsMatch(input, rule)` does the same job without allocating; it cannot return captures or edits, so the later lessons use `Parse`. Build a rule once and reuse it: the first parse with a rule compiles it.
@@ -73,7 +91,10 @@ Parser.Parse("hello world", rule, partial: true).Matched;   // true
 | `opt a` | zero or one `a` |
 | `3 a`, `2 4 a` | exactly 3, or between 2 and 4 |
 | `[ ... ]` | grouping |
-| `digit alpha alnum upper lower space` | character classes |
+| `digit alpha alnum upper lower space newline tab` | character classes |
+| `none` | matches, consuming nothing |
+
+Text goes in double quotes: `"abc"`. A single character can be written `#"a"`. Anything else without quotes is a keyword or the name of a rule (lesson 4), so forgetting the quotes around text gives an `Undefined rule` error.
 
 Choice is **ordered**: `a | b` tries `a` first and only tries `b` if `a` fails. Repeats are greedy and never give back.
 
@@ -120,7 +141,7 @@ Seq("b", "c")            // also fine
 Choice("a", Seq("b", "c"))
 ```
 
-`Choice(...)` and `Seq(...)` take any number of rules and avoid the problem entirely.
+`Choice(...)` and `Seq(...)` take any number of rules and avoid the problem entirely. The other keywords are functions of the same names: `Some(r)`, `Any(r)`, `Opt(r)`, `Rep(3, r)` and `Rep(2, 4, r)`, and the character classes are `Digit`, `Alpha`, `AlphaNum`, `Upper`, `Lower`, `Space`, `Newline` and `Tab`. Later lessons add `Not`, `Ahead`, `To`, `Thru`, `Copy`, `Set` and the rest; the [README keyword map](../README.md#keyword-map) lists them all.
 
 Rules also chain: `Alpha.Some().Copy("word")` is `copy word some alpha`, and `Digit.Times(2, 4)` is `2 4 digit`. The full list is in the [reference](Reference.md#fluent-operators-and-chained-forms).
 
@@ -152,6 +173,8 @@ var rules = Dialect.ReadRules(new Dictionary<string, string>
 });
 Parser.Parse("12*3", Ref("calc"), rules).Matched;   // true
 ```
+
+`Ref("calc")` means "start from the rule named `calc`", and `rules` is where to look names up. (`Try("calc", ...)` cannot do this, because the helper has no table; for the lessons that use one, build the table and call `Parser.Parse` as above.)
 
 Names let you reuse pieces and, in lesson 9, recurse. A set of characters is written `charset "..."` in the text, with ranges like a regex class: `charset "a-zA-Z_"`. A `-` between two characters is a range, and first or last it is a hyphen. From the fluent side the same thing is `Chars("a-zA-Z_")`, and `CharIn("+-*/")` takes the characters literally.
 
@@ -218,7 +241,7 @@ Exercise 3 shows the standard "any character except X" pattern: `not x skip`.
 
 ## 6. Capturing
 
-`copy name rule` stores the matched text in `result.Vars["name"]`. `set name rule` stores just the first item (a `char` in text mode).
+`copy name rule` stores the matched text in `result.Vars["name"]`. `set name rule` stores just the first item (a `char` in text mode). The `Try` helper prints captures after each result, so `Try("copy k to \"=\" \"=\" copy v to end", "name=joshua")` shows `k="name"  v="joshua"`.
 
 ```csharp
 var r = Parser.Parse("name=joshua", Dialect.Read("copy k to \"=\" \"=\" copy v to end"));
@@ -353,6 +376,26 @@ Parser.Parse(input, Dialect.Read("quote add integer! integer!")).Matched;   // t
 - `quote add` matches the `Word("add")` item.
 - `integer! decimal! string! word! block!` match by type.
 - `into r` goes inside a nested list and matches it with `r`; the whole nested list must be consumed.
+
+The `Try` helper takes strings, so add this one for the exercises. It takes each list as an array, with `W("add")` for a word and a nested array for a nested list:
+
+```csharp
+static Word W(string name) => new(name);
+
+static void TryBlock(string rule, params object[][] inputs)
+{
+    var r = Dialect.Read(rule);
+    foreach (var items in inputs)
+    {
+        var result = Parser.Parse(items.ToList(), r);
+        var extra = result.Vars.Select(v => $"{v.Key}={Show(v.Value)}").ToList();
+        if (result.Output is IEnumerable<object> edited && !edited.SequenceEqual(items)) extra.Add($"output={Show(edited)}");
+        Console.WriteLine($"{(result.Matched ? "match   " : "no match")}  {Show(items)}  {string.Join("  ", extra)}");
+    }
+}
+
+TryBlock("quote add integer! integer!", [W("add"), 1, 2], [W("add"), 1]);
+```
 
 ### Exercises
 
@@ -527,6 +570,7 @@ Write the rule table and the two actions, then check the three results. **Hint:*
 <details><summary>Solution</summary>
 
 ```csharp
+var ini = "[core]\nname=puter\n\n[extra]\n  x = 1\ny=2";
 var entries = new List<string>();
 var section = "";
 var acts = new Dictionary<string, Action<Ctx>>
@@ -544,6 +588,7 @@ var rules = Dialect.ReadRules(new Dictionary<string, string>
 }, acts);
 
 Parser.Parse(ini, Ref("file"), rules);
+Console.WriteLine(string.Join("\n", entries));   // core.name=puter, extra.x=1, extra.y=2
 ```
 
 The key is `some [not [space | "="] skip]`: any characters up to whitespace or `=`. The value is `any [not newline skip]`: everything to the end of the line.
@@ -562,7 +607,7 @@ Parser.IsMatch("555-1234", phone);        // true; the first call generates the 
 ((CompiledRule)phone).IsNative;           // true: it really is IL
 ```
 
-Compile once and keep the rule in a field. Building the IL takes a fraction of a millisecond to a few milliseconds (the first time in a process, about 30 ms), so a rule you run once is better left alone.
+Compile once and keep the rule in a field. Building the IL takes a fraction of a millisecond to a few milliseconds for a small rule, about 30 ms the first time in a process, and tens of milliseconds for a large grammar, so a rule you run once is better left alone.
 
 A rule table compiles the same way, and every rule in it should be compiled so they can call each other directly:
 
@@ -573,7 +618,7 @@ Parser.Parse("(()())", Ref("group"), rules).Matched;   // true
 
 Every keyword compiles, including `collect`/`keep`, `break`/`reject` and the edits `insert`, `change` and `remove`. Block input always uses the interpreter, so `.Compiled()` on a rule for blocks is harmless and changes nothing.
 
-Edits are fast even without compiling. `any [remove some digit | skip]` over a megabyte of text takes about a millisecond, because the engine keeps the text in a buffer with a gap instead of shifting it on every removal.
+Edits are fast even without compiling, and take time in proportion to the text. `any [remove some digit | skip]` over a megabyte takes about ten milliseconds in a Release build (five compiled), because the engine keeps the text in a buffer with a gap instead of shifting it on every removal. A Debug build is several times slower, so time things with `dotnet run -c Release`.
 
 ### Exercises
 
@@ -599,7 +644,6 @@ For 3: `Parser.Parse("a1b22c", Dialect.Read("any [remove some digit | skip]").Co
 ---
 
 ## Where next
-
 
 - Add `;` comment lines to the INI grammar.
 - Turn the parser into one that rewrites a file: `change` the value of one key and read `Output`.

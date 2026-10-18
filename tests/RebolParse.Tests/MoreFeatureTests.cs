@@ -116,7 +116,7 @@ public class MoreFeatureTests
     // ---- reader errors and bindings ----
 
     [Theory]
-    [InlineData("keep pick", "ended")]
+    [InlineData("keep pick", "needs a rule after it")]
     [InlineData("if", "'if' needs a condition")]
     [InlineData("if \"a\"", "'if' needs a condition")]
     [InlineData("keep (x)", "bind a named function")]
