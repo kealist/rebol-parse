@@ -12,7 +12,7 @@ This runs the tests, packs `RebolParse.0.2.0.nupkg` and its `.snupkg` symbols in
 
 ## One-time setup for trusted publishing
 
-Trusted publishing lets the workflow in `.github/workflows/build.yml` prove to nuget.org who it is, and swaps that proof for an API key that lives for a few minutes. There is no long-lived key to leak.
+Trusted publishing lets the workflow in `.github/workflows/build.yml` prove to nuget.org who it is, and swaps that proof for an API key that lives for a few minutes. There is no long-lived key to leak. The exchange is done by `scripts/nuget-login.sh`, a few lines of `curl` against nuget.org's documented token endpoint, so no third-party action is involved: it asks GitHub for an identity token with audience `https://www.nuget.org`, posts it with your profile name, and gets the key back (masked in the log).
 
 1. **First release by hand.** A policy belongs to a package you own, so the first version of a new package goes up with an ordinary API key: create one at nuget.org (Account, API keys, scope *Push new packages and package versions*, glob `RebolParse*`), then `NUGET_API_KEY=... scripts/pack.sh 0.1.0 --push`. (If your nuget.org account lets you create a policy before the package exists, you can skip this step; I have not checked.)
 2. **Add the policy.** On nuget.org, open your account menu, *Trusted Publishing*, and create a policy: repository owner `kealist`, repository `rebol-parse`, workflow file `build.yml`. In the *environment name* field type `nuget`, which is the name of the environment the `publish` job runs in. The two must match exactly. (Leaving the field blank also works, since the policy then accepts any environment.)
@@ -35,6 +35,6 @@ Before tagging, move the entries under *Unreleased* in `CHANGELOG.md` to the new
 ## If something goes wrong
 
 - **The push is rejected as a duplicate.** nuget.org never lets a version be replaced. The workflow uses `--skip-duplicate`, so a re-run does nothing; tag the next version.
-- **The login step fails.** The policy must match the repository owner, repository name and workflow file name exactly, and the job needs `id-token: write` (it has it). A tag pushed from a fork or a differently named workflow will not match.
+- **The login step fails.** The script prints the HTTP status and nuget.org's message. A 401 means no policy matched. Otherwise the policy must match the repository owner, repository name and workflow file name exactly, and the job needs `id-token: write` (it has it). A tag pushed from a fork or a differently named workflow will not match.
 - **A bad version was published.** Unlist it on nuget.org (Manage package, the version, *Listing*), then release a fixed one.
 - **The version in `RebolParse.csproj`** is only used for local builds. The workflow and `scripts/pack.sh <version>` override it, so you do not need to edit it to release.
