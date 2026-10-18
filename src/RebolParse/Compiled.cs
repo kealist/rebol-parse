@@ -14,6 +14,9 @@ internal sealed class TextEngine
     public Ctx Ctx = null!;
     public bool Edited;
     private string original = "";
+
+    /// <summary>The text as it was given; the same as the current text until the first edit.</summary>
+    public string Original => original;
     private bool readOnly;
     private char[]? buffer;   // the text once edited, with a gap: see below
     private int length;       // used chars in the buffer, the gap included
@@ -248,6 +251,7 @@ internal static class Compiler
                     string s => new LitString(s),
                     _ => new Never(),   // numbers and words never occur in text
                 };
+            case CompiledRule c: return IlCompiler.TryCompile(c.Body) ?? Compile(c.Body);
             case Seq q: { var items = CompileAll(q.Items); return new SeqNode(items) { Pure = AllPure(items) }; }
             case Alt a: { var items = CompileAll(a.Items); return new AltNode(items) { Pure = AllPure(items) }; }
             case SkipRule: return new SkipNode();

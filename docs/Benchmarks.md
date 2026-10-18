@@ -32,6 +32,27 @@ Building the matcher does not include compiling the rule tree to nodes, which ha
 
 Pick RebolParse for grammars that are awkward or impossible as regex (recursion, structured block input, rules that capture and edit as they go) and for readability. For a hot loop that only validates flat text, `RegexOptions.Compiled` is still the fastest option.
 
+## Compiled to IL
+
+`rule.Compiled()` (see the [reference](Reference.md#compiling-to-il)) generates IL for a rule, as `RegexOptions.Compiled` does. Same method, same short-job caveats, same inputs as above.
+
+| Task | Size | Interpreter `IsMatch` | **IL** | Regex (interpreted) | Regex (compiled) |
+|---|---|---|---|---|---|
+| Validate `555-1234` | 8 chars | 29.7 ns | **10.0 ns** | 48.4 ns | 13.8 ns |
+| Validate comma-separated ints | 100 numbers | 2,212 ns | **354 ns** | 3,113 ns | 1,896 ns |
+| | 10,000 numbers | 209 µs | **34 µs** | 301 µs | 198 µs |
+| Balanced parens, depth 10 | ~420 chars | 5.8 µs | **2.0 µs** | 17.0 µs | 3.9 µs |
+| Balanced parens, depth 1000 | ~40 KB | 910 µs | **516 µs** | 1,611 µs | 382 µs |
+| JSON skip-to-property, 150 KB | 3 properties | 2,026 µs | **1,122 µs** | n/a | n/a |
+| JSON skip-to-property, early | 3 properties | 3.8 µs | **2.9 µs** | n/a | n/a |
+| JSON skip-to-property, 400 B | 3 properties | 1.9 µs | 2.5 µs | n/a | n/a |
+
+- **Loops and literals gain the most.** A rule that is mostly character tests and repeats compiles to straight-line code with no calls, so validation is 3-6x faster than the interpreter and beats `RegexOptions.Compiled`: 1.4x on the phone number and 5.8x on the long number list.
+- **Recursion gains about 1.8x**, because each `Ref` is still a delegate call. Depth-10 parens now beat compiled regex; depth 1000 is still 1.35x behind.
+- **Grammars made of many tiny rules can come out even.** The 400-byte JSON lookup is a little slower compiled, because each call between rules costs more than the work inside it. It gains once the rules do real work (150 KB).
+- **It costs time to build.** The first compile in a process takes about 30 ms, mostly loading and warming the expression compiler. After that a small rule takes 0.3-0.7 ms and the 7-rule JSON grammar about 8 ms. A rule you run once is better left interpreted.
+- Rules that use `break`, `reject`, `collect`, `keep` or an edit are not compiled; they run on the interpreter and are not slower for having asked.
+
 ## Reading properties out of JSON: RebolParse vs System.Text.Json
 
 Three properties per call (for example `author.name`, `tags[1]`, `version`), on a 400-byte document and on a 150 KB array of 2,000 records. The RebolParse side uses the grammar from the [JSON sample](../samples/Samples/JsonDemo.cs) in two ways: read the whole document into objects and navigate to the paths, or use a rule that skips straight to each property and copies only its text. Each benchmark checks in setup that every method returns the same three values.

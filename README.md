@@ -183,7 +183,7 @@ REBOL keywords, and the matching fluent builder from `using static RebolParse.P;
 
 Rules compile to specialized matcher nodes the first time they are used, so build a rule once and reuse it (a `static readonly` field is ideal), as you would a `Regex`. Text is matched as a `ReadOnlySpan<char>` with vectorized scanning for literals. `Parser.IsMatch` allocates nothing for rules that do not capture or edit; `Parser.Parse` returns captures and edits.
 
-On flat text RebolParse runs at or ahead of .NET's interpreted `Regex` on most tasks and ahead of `RegexOptions.Compiled` on extraction, while `Compiled` still wins plain validation and recursion. Edits (`remove`, `change`, `insert`) are linear when they sweep through the text, within about 1.4x of `Regex.Replace`. [Benchmarks](docs/Benchmarks.md) has the numbers, the method, and how to reproduce them.
+On flat text RebolParse runs at or ahead of .NET's interpreted `Regex` on most tasks and ahead of `RegexOptions.Compiled` on extraction, while `Compiled` still wins plain validation and recursion. `rule.Compiled()` generates IL and beats `RegexOptions.Compiled` on validation. Edits (`remove`, `change`, `insert`) are linear when they sweep through the text, within about 1.4x of `Regex.Replace`. [Benchmarks](docs/Benchmarks.md) has the numbers, the method, and how to reproduce them.
 
 ## Build
 

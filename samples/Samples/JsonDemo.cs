@@ -49,7 +49,7 @@ public sealed class JsonDemo : IDemo
             string = "^"" copy s any [some [not ["^"" | "\"] skip] | "\" skip] "^"" (@string)
             number = copy n [opt "-" ["0" | some digit] opt ["." some digit]
                              opt [charset "eE" opt charset "+-" some digit]] (@number)
-            """, actions);
+            """, actions).Compiled();
     }
 
     private List<object?> TakeItems()

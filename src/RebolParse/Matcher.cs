@@ -227,6 +227,9 @@ internal sealed class Matcher
     {
         switch (rule)
         {
+            case CompiledRule c:
+                return Match(c.Body, ref pos);
+
             case Lit l:
                 var n = s.MatchLiteral(pos, l.Value);
                 if (n < 0) return false;

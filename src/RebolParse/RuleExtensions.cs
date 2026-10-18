@@ -53,4 +53,16 @@ public static class RuleExtensions
 
     /// <summary>Deletes what this rule matches (<c>remove</c>).</summary>
     public static Rule Remove(this Rule r) => P.Remove(r);
+
+    /// <summary>
+    /// This rule compiled to IL, like <c>RegexOptions.Compiled</c>: it costs a few milliseconds the first time it runs and
+    /// then matches faster. It gives the same results as the interpreter; a rule that uses <c>break</c>, <c>reject</c>,
+    /// <c>collect</c>, <c>keep</c> or an edit simply runs on the interpreter. Rules that refer to others by name only get
+    /// the full speed when the whole table is compiled with <see cref="Compiled(IReadOnlyDictionary{string, Rule})"/>.
+    /// </summary>
+    public static Rule Compiled(this Rule r) => r as CompiledRule ?? new CompiledRule(r);
+
+    /// <summary>A copy of this rule table with every rule compiled to IL. Pass it as the <c>rules</c> argument of <c>Parse</c>.</summary>
+    public static Dictionary<string, Rule> Compiled(this IReadOnlyDictionary<string, Rule> rules) =>
+        rules.ToDictionary(kv => kv.Key, kv => kv.Value.Compiled());
 }

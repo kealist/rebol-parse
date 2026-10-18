@@ -127,6 +127,22 @@ A `ParseResult` converts to `bool`, so `if (Parser.Parse(...))` works. Captures 
 
 Rules are immutable and safe to share across threads. The first parse with a rule compiles it into a faster internal form, cached for that rule instance, so build rules once (a `static readonly` field is ideal) rather than per call. Re-reading the same text with `Dialect.Read` creates a new rule that compiles again. `IsMatch` keeps its working state per thread; it is safe to call from many threads and to call re-entrantly from an action.
 
+## Compiling to IL
+
+```csharp
+var rule  = Dialect.Read("3 digit \"-\" 4 digit").Compiled();
+var rules = Dialect.ReadGrammar(grammarText).Compiled();   // every rule in the table
+Parser.IsMatch("555-1234", rule);
+```
+
+`Compiled()` returns a rule that generates IL the first time it runs, as `RegexOptions.Compiled` does, and is then several times faster on loops and literals ([benchmarks](Benchmarks.md#compiled-to-il)). It matches exactly what the interpreter matches, down to the position and the captured values, and it is safe to call on any rule.
+
+- **What compiles:** literals, sequence, choice, repeats, `not`, `ahead`, `to`, `thru`, `skip`, `end`, `fail`, character classes and sets, `copy`, `set`, marks and `:name`, `(@name)` actions, `if (@name)` and named rules.
+- **What does not:** `break`, `reject`, `collect`, `keep`, `insert`, `change` and `remove`. A rule that uses any of them runs on the interpreter. `((CompiledRule)rule).IsNative` tells you which happened.
+- **Block input** always uses the interpreter.
+- **Named rules.** For full speed compile the whole table: `rules.Compiled()` returns a copy with every rule compiled. A compiled rule may call an uncompiled one only if that rule is plain matching (no `Ref`, no edits, no `keep`); otherwise it throws `InvalidOperationException` with the rule's name.
+- **Cost.** The first compile in a process takes about 30 ms; after that a small rule takes under a millisecond. Compile rules you run many times, and build them once.
+
 ## Limits
 
 - Recursion depth is bounded by the stack: a rule that recurses a few thousand levels deep on one thread can overflow it. Left recursion (`expr = expr "+" digit`) recurses forever; rewrite it with a loop.

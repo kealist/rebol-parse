@@ -45,6 +45,8 @@ public class JsonLookup
     private string[] paths = [];
     private Step[][] steps = [];
     private Rule[] targeted = [];
+    private Rule[] targetedIl = [];
+    private static readonly Dictionary<string, Rule> SkipRulesIl = SkipRules.Compiled();
 
     /// <summary>
     /// Small is a 400-byte document. Large is 2,000 records, about 150 KB, read at the start, middle and end.
@@ -69,12 +71,14 @@ public class JsonLookup
         utf8 = Encoding.UTF8.GetBytes(json);
         steps = paths.Select(ParsePath).ToArray();
         targeted = steps.Select(BuildRule).ToArray();
+        targetedIl = targeted.Select(r => r.Compiled()).ToArray();
 
         var expected = JsonDocumentString();
         Guard.Same("JsonDocument bytes", JsonDocumentBytes(), expected);
         Guard.Same("JsonNode", JsonNodeTree(), expected);
         Guard.Same("RebolParse tree", RebolParseTree(), expected);
         Guard.Same("RebolParse targeted", RebolParseTargeted(), expected);
+        Guard.Same("RebolParse targeted IL", RebolParseTargetedIl(), expected);
     }
 
     // "author.name" and "tags[1]" as steps
@@ -174,6 +178,18 @@ public class JsonLookup
         foreach (var rule in targeted)
         {
             var raw = (string)Parser.Parse(json, rule, SkipRules, partial: true).Vars["r"]!;
+            sb.Append(raw.Length > 1 && raw[0] == '"' ? raw[1..^1] : raw).Append('|');
+        }
+        return sb.ToString();
+    }
+
+    [Benchmark(Description = "RebolParse compiled to IL: skip to each property, copy its text")]
+    public string RebolParseTargetedIl()
+    {
+        var sb = new StringBuilder();
+        foreach (var rule in targetedIl)
+        {
+            var raw = (string)Parser.Parse(json, rule, SkipRulesIl, partial: true).Vars["r"]!;
             sb.Append(raw.Length > 1 && raw[0] == '"' ? raw[1..^1] : raw).Append('|');
         }
         return sb.ToString();

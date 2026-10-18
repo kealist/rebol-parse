@@ -36,7 +36,7 @@ public sealed class Calculator : IDemo
                       | "(" expr _ ")"
                       | "-" factor (@neg)]
             calc   = expr _ end
-            """, actions);
+            """, actions).Compiled();   // compiled to IL: this runs on every evaluation
     }
 
     /// <summary>Evaluate <paramref name="text"/>. Throws <see cref="FormatException"/> when it is not an expression.</summary>
