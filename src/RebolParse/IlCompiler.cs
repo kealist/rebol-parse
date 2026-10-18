@@ -560,8 +560,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             var code = Emit(rule, pos, fail);
             var body = Expression.Block(
                 typeof(int),
-                [len, ic, buf, off, .. locals, .. hoisted.Values, .. hoistedText.Values],
-                Expression.Block(typeof(void), Prologue().DefaultIfEmpty(Expression.Empty())),
+                [len, ic, buf, off, .. locals],
                 Expression.Assign(pos, start),
                 buffered ? Reload() : Expression.Assign(len, Expression.Property(text, nameof(string.Length))),
                 Expression.Assign(ic, Expression.Field(e, nameof(TextEngine.IgnoreCase))),
@@ -582,25 +581,43 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
 
         private static Expression Int(int n) => Expression.Constant(n);
 
-        // Constants other than numbers are loaded from the delegate's closure each time they are used. Each is loaded once
-        // into a local at the start instead, and used from there.
-        private readonly Dictionary<object, ParameterExpression> hoisted = new(ReferenceEqualityComparer.Instance);
-        private readonly Dictionary<string, ParameterExpression> hoistedText = [];
+        // Constants other than numbers are fetched from the delegate's closure. Inside a loop they are fetched once, just
+        // before the loop starts, into locals; elsewhere they are used where they stand, so code that fails early
+        // does not pay for constants it never reaches.
+        private sealed class HoistScope
+        {
+            public readonly Dictionary<object, ParameterExpression> Objects = new(ReferenceEqualityComparer.Instance);
+            public readonly Dictionary<string, ParameterExpression> Text = [];
+        }
+
+        private HoistScope? loopScope;
 
         private Expression K<T>(T value) where T : class
         {
+            if (loopScope is not { } scope)
+                return value is string plain ? Expression.Constant(plain) : Expression.Constant(value, value.GetType());
             if (value is string str)
             {
-                if (!hoistedText.TryGetValue(str, out var local)) hoistedText[str] = local = Expression.Variable(typeof(string), "k" + counter++);
+                if (!scope.Text.TryGetValue(str, out var local)) scope.Text[str] = local = Expression.Variable(typeof(string), "k" + counter++);
                 return local;
             }
-            if (!hoisted.TryGetValue(value, out var v)) hoisted[value] = v = Expression.Variable(value.GetType(), "k" + counter++);
+            if (!scope.Objects.TryGetValue(value, out var v)) scope.Objects[value] = v = Expression.Variable(value.GetType(), "k" + counter++);
             return v;
         }
 
-        private IEnumerable<Expression> Prologue() =>
-            hoisted.Select(kv => (Expression)Expression.Assign(kv.Value, Expression.Constant(kv.Key, kv.Value.Type)))
-                .Concat(hoistedText.Select(kv => (Expression)Expression.Assign(kv.Value, Expression.Constant(kv.Key))));
+        // emits a loop with the constants it uses loaded in front of it (the outermost loop does the loading for those inside it)
+        private Expression InLoop(Func<Expression> emit)
+        {
+            if (loopScope != null) return emit();
+            var scope = loopScope = new HoistScope();
+            Expression code;
+            try { code = emit(); }
+            finally { loopScope = null; }
+            var loads = scope.Objects.Select(kv => (Expression)Expression.Assign(kv.Value, Expression.Constant(kv.Key, kv.Value.Type)))
+                .Concat(scope.Text.Select(kv => (Expression)Expression.Assign(kv.Value, Expression.Constant(kv.Key))))
+                .Append(code);
+            return Expression.Block(typeof(void), scope.Objects.Values.Concat(scope.Text.Values), loads);
+        }
 
         /// <summary>A call to a character test: direct when the delegate points at an ordinary method, through the delegate otherwise.</summary>
         private Expression CharTest(Func<char, bool> test, Expression ch)
@@ -877,7 +894,10 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             return Expression.Block(typeof(void), parts);
         }
 
-        private Expression EmitRepeat(Repeat r, ParameterExpression pos, LabelTarget fail)
+        private Expression EmitRepeat(Repeat r, ParameterExpression pos, LabelTarget fail) =>
+            InLoop(() => EmitRepeatCore(r, pos, fail));
+
+        private Expression EmitRepeatCore(Repeat r, ParameterExpression pos, LabelTarget fail)
         {
             var from = Local<int>("repFrom");
             if (Unwrap(r.Body) is Item { CharTest: { } test })
@@ -987,7 +1007,10 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             return Expression.IfThen(short_, Fail(fail));
         }
 
-        private Expression EmitScan(Rule bodyRule, bool thru, ParameterExpression pos, LabelTarget fail)
+        private Expression EmitScan(Rule bodyRule, bool thru, ParameterExpression pos, LabelTarget fail) =>
+            InLoop(() => EmitScanCore(bodyRule, thru, pos, fail));
+
+        private Expression EmitScanCore(Rule bodyRule, bool thru, ParameterExpression pos, LabelTarget fail)
         {
             var body = Unwrap(bodyRule);
             switch (body)
