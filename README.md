@@ -135,7 +135,7 @@ pair.Parse("width=640").Vars["value"];    // "640"
 | [Tutorial](docs/Tutorial.md) | Fifteen lessons with exercises and solutions, ending in an INI-file parser. Start here if you are new to parse. |
 | [Reference](docs/Reference.md) | Every keyword and the text syntax, what a parse returns, errors, what backtracking undoes, and limits. |
 | [Benchmarks](docs/Benchmarks.md) | Comparison with .NET `Regex`, with numbers and caveats. |
-| `samples/Samples` | A runnable program: config lines, an arithmetic grammar, and a block-mode command parser. |
+| [Samples](samples/README.md) | Eight runnable programs that check their own results: a calculator, a JSON reader, INI, CSV, log analysis, a source cleaner, a block-mode robot language, and a template engine. |
 
 The public API is fully documented with XML comments, so IntelliSense shows what each keyword does.
 
@@ -183,13 +183,13 @@ REBOL keywords, and the matching fluent builder from `using static RebolParse.P;
 
 Rules compile to specialized matcher nodes the first time they are used, so build a rule once and reuse it (a `static readonly` field is ideal), as you would a `Regex`. Text is matched as a `ReadOnlySpan<char>` with vectorized scanning for literals. `Parser.IsMatch` allocates nothing for rules that do not capture or edit; `Parser.Parse` returns captures and edits.
 
-On flat text RebolParse runs at or ahead of .NET's interpreted `Regex` on most tasks and ahead of `RegexOptions.Compiled` on extraction and shallow recursion, while `Compiled` still wins plain validation and deep recursion. The one known slow path is `remove` on very large inputs. [Benchmarks](docs/Benchmarks.md) has the numbers, the method, and how to reproduce them.
+On flat text RebolParse runs at or ahead of .NET's interpreted `Regex` on most tasks and ahead of `RegexOptions.Compiled` on extraction, while `Compiled` still wins plain validation and recursion. Edits (`remove`, `change`, `insert`) are linear when they sweep through the text, within about 1.4x of `Regex.Replace`. [Benchmarks](docs/Benchmarks.md) has the numbers, the method, and how to reproduce them.
 
 ## Build
 
 ```bash
-dotnet test                                                   # 370+ tests, 100% line and branch coverage
-dotnet run --project samples/Samples                          # runnable examples
+dotnet test                                                   # 500+ tests, 100% line and branch coverage of the library
+dotnet run --project samples/Samples                          # eight runnable examples (add a name to run one)
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"
 ```
 

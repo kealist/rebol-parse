@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\RebolParse\RebolParse.csproj" />
+    <ProjectReference Include="..\..\samples\Samples\Samples.csproj" />
   </ItemGroup>
 
 </Project>

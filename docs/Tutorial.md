@@ -554,4 +554,4 @@ The key is `some [not [space | "="] skip]`: any characters up to whitespace or `
 
 - Add `;` comment lines to the INI grammar.
 - Turn the parser into one that rewrites a file: `change` the value of one key and read `Output`.
-- Read the keyword table in the [README](../README.md) for anything this tutorial skipped, and `samples/Samples/Program.cs` for runnable examples.
+- Read the keyword table in the [README](../README.md) for anything this tutorial skipped, and the [samples](../samples/README.md) for larger programs: a JSON reader, CSV, a calculator, a block-mode language and a template engine.
