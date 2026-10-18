@@ -1,6 +1,23 @@
 # RebolParse
 
-A REBOL-style `parse` dialect for C#. Rules match strings (character by character) or blocks (lists of values), with captures and inline actions. Two ways to write rules, one engine underneath.
+[REBOL's `parse` dialect](http://www.rebol.com/docs/core23/rebolcore-15.html) for C#: a compact grammar language for matching, extracting and rewriting text and structured data. It sits between regular expressions and a full parser generator. Rules read left to right like the input they describe, they can recurse, and they run actions as they match.
+
+```csharp
+using RebolParse;
+
+var rule = Dialect.Read("copy key some alpha \"=\" copy value some digit");
+var result = Parser.Parse("width=640", rule);
+
+result.Matched;        // true
+result.Vars["key"];    // "width"
+result.Vars["value"];  // "640"
+```
+
+- **Two ways to write rules, one engine.** Rule text like `some digit "." some digit`, or fluent C# like `Some(Digit) + "." + Some(Digit)`.
+- **Text and structured data.** The same rules match characters in a string or items in a list, including nested lists.
+- **Recursion.** Named rules can refer to each other, so balanced brackets, nested lists and expression grammars are direct to write. Regular expressions cannot do this without engine-specific extensions.
+- **Capture, collect, rewrite.** `copy`, `collect`/`keep`, and `insert`/`change`/`remove` pull data out of input or edit it as it is matched.
+- **Fast and allocation-free where it counts.** Rules compile on first use. `Parser.IsMatch` allocates nothing. See [Performance](#performance).
 
 ## Install
 
@@ -8,96 +25,134 @@ A REBOL-style `parse` dialect for C#. Rules match strings (character by characte
 dotnet add package RebolParse
 ```
 
-Targets .NET 10.
+Requires .NET 10.
 
-## Example
+## A tour
+
+**Validate.** `IsMatch` answers yes or no, allocation-free.
 
 ```csharp
 using RebolParse;
 using static RebolParse.P;
 
-// Fluent
-var rule = Some(Digit) + "." + Some(Digit);
-Parser.Parse("3.14", rule).Matched;            // true
+// build once, e.g. as a static field, and reuse
+static readonly Rule Phone = Dialect.Read("3 digit \"-\" 4 digit");
 
-// Text dialect, same rule tree
-var same = Dialect.Read("some digit \".\" some digit");
-
-// Captures and named actions
-var kv = Dialect.Read("copy k to \"=\" \"=\" copy v to end (@done)",
-    new Dictionary<string, Action<Ctx>> { ["done"] = c => Console.WriteLine(c.Vars["v"]) });
+Parser.IsMatch("555-1234", Phone);   // true
+Parser.IsMatch("5551234", Phone);    // false
 ```
 
-Semantics follow REBOL: ordered choice (`|`) with backtracking, greedy repeats, and a parse succeeds only if the whole input is consumed (pass `partial: true` to allow a prefix match).
+**Extract.** `collect` and `keep` gather what you want from anywhere in the input.
 
-New to parse? Work through the [tutorial](docs/Tutorial.md): fifteen lessons with exercises and solutions.
+```csharp
+var words = Dialect.Read("collect words any [keep some alpha | skip]");
+Parser.Parse("hello, big world!", words).Vars["words"];   // ["hello", "big", "world"]
+```
+
+**Rewrite.** `change`, `insert` and `remove` edit as they match; the result is in `Output`, and your input is never touched.
+
+```csharp
+var dashes = Dialect.Read("any [change \"-\" \"+\" | skip]");
+Parser.Parse("a-b-c", dashes).Output;   // "a+b+c"
+```
+
+**Recurse.** Named rules can refer to themselves.
+
+```csharp
+var rules = Dialect.ReadRules(new Dictionary<string, string>
+{
+    ["group"] = "\"(\" any group \")\"",
+});
+Parser.IsMatch("(()(()))", Ref("group"), rules);   // true
+Parser.IsMatch("(()",      Ref("group"), rules);   // false
+```
+
+**Run code.** Name an action in the rule with `(@name)` and bind it to a C# delegate.
+
+```csharp
+var total = 0;
+var sum = Dialect.Read("any [copy n some digit (@add) opt \",\"]",
+    new Dictionary<string, Action<Ctx>> { ["add"] = c => total += int.Parse((string)c.Vars["n"]!) });
+Parser.Parse("1,2,30", sum);   // total == 33
+```
+
+**Match structured data.** Give `Parse` a list instead of a string and rules match items, by value or by type; `into` descends into nested lists.
+
+```csharp
+var command = Dialect.Read("[quote add integer! integer!] | [quote say string!]");
+Parser.IsMatch(new List<object> { new Word("add"), 1, 2 }, command);   // true
+```
+
+## Semantics at a glance
+
+- A parse succeeds only if the rule matches **and consumes all the input**. Pass `partial: true` to allow leftovers.
+- `a | b` is **ordered choice** with backtracking: the first alternative that matches wins.
+- Repeats (`some`, `any`) are **greedy** and never give back.
+- Matching is **case-sensitive**; pass `ignoreCase: true` for literals to ignore case.
+- Paren code is **never evaluated**. Only `(@name)`, bound to a delegate you supply, is allowed, so rules can safely come from untrusted text.
+
+## Documentation
+
+| | |
+|---|---|
+| [Tutorial](docs/Tutorial.md) | Fifteen lessons with exercises and solutions, ending in an INI-file parser. Start here if you are new to parse. |
+| [Reference](docs/Reference.md) | Every keyword and the text syntax, what a parse returns, errors, what backtracking undoes, and limits. |
+| [Benchmarks](docs/Benchmarks.md) | Comparison with .NET `Regex`, with numbers and caveats. |
+| `samples/Samples` | A runnable program: config lines, an arithmetic grammar, and a block-mode command parser. |
+
+The public API is fully documented with XML comments, so IntelliSense shows what each keyword does.
 
 ## Keyword map
+
+REBOL keywords, and the matching fluent builder from `using static RebolParse.P;`. See the [reference](docs/Reference.md#keywords) for exactly what each one matches and consumes.
 
 | REBOL | Fluent | Notes |
 |---|---|---|
 | `"abc"` `#"a"` | `"abc"` `'a'` | implicit conversion to `Rule` |
-| `a b` | `a + b` | sequence |
-| `a \| b` | `a \| b` | ordered choice |
+| `a b` | `a + b` | sequence; one side must already be a `Rule` (or use `Seq(a, b)`) |
+| `a \| b` | `a \| b` | ordered choice (or `Choice(a, b)`) |
 | `some` `any` `opt` | `Some` `Any` `Opt` | |
 | `3 r` `2 4 r` | `Rep(3, r)` `Rep(2, 4, r)` | |
 | `skip` `end` `none` `fail` | `Skip` `End` `None` `Fail` | |
-| `ahead` `not` | `Ahead` `Not` | |
-| `to` `thru` | `To` `Thru` | |
+| `ahead` `not` | `Ahead` `Not` | lookahead, consume nothing |
+| `to` `thru` | `To` `Thru` | scan forward to a match |
 | `copy v r` `set v r` | `Copy("v", r)` `Set("v", r)` | results in `ParseResult.Vars` |
-| `into r` | `Into(r)` | descends into a nested block |
+| `into r` | `Into(r)` | descends into a nested list |
 | `quote word` | `Lit(new Word("word"))` | |
 | `name:` `:name` | `Mark("name")` `Seek("name")` | save / restore position |
-| `break` | `Break` | leaves the enclosing `some`/`any`/`opt`, succeeding |
-| `reject` | `Reject` | leaves the enclosing `some`/`any`/`opt`, failing it; outside a loop it is `fail` |
-| `insert v` | `Insert(v)` | inserts at the position and moves past it |
-| `change r v` | `Change(r, v)` | replaces what `r` matched, then moves past the new value |
-| `remove r` | `Remove(r)` | deletes what `r` matched |
-| `collect v r` | `Collect("v", r)` | list of everything `r` keeps, stored in `Vars` |
-| `keep r` | `Keep(r)` | appends the match to the enclosing `collect` |
-| `keep pick r` | `KeepPick(r)` | appends only the first matched item |
-| `keep (@fn)` | `Keep(ctx => value)` | appends a computed value; `null` keeps nothing |
-| `if (@fn)` | `If(ctx => bool)` | succeeds without consuming when the condition holds |
-| `(code)` | `Do(ctx => ...)` | text form binds by name: `(@name)` |
-| `digit alpha alnum upper lower space newline tab` | `Digit` ... | string mode |
-| `integer! decimal! string! word! block!` | `Integer` ... | block mode |
-| bare word | `Ref("name")` | looks up the rule table passed to `Parse`; recursion works |
-
-## Editing and collecting
-
-`insert`, `change` and `remove` edit a private copy of the input; your string or list is never modified. Read the result from `ParseResult.Output` (a string, or a list for block input).
-
-```csharp
-var r = Parser.Parse("a-b-c", Dialect.Read("any [change \"-\" \"+\" | skip]"));
-r.Output;   // "a+b+c"
-```
-
-A value is a string, char or integer literal, or a variable name set earlier by `copy`/`set` (`copy w to end insert w`). The fluent forms also take a `Func<Ctx, object?>`. In block mode a value is inserted as one item, and edits inside `into` are written back to the parent. Marks saved before an edit are not adjusted.
-
-`collect` stores a list in `Vars`: strings in text mode, and in block mode the item itself for a one-item match or a list for a longer one. A `keep` inside a branch that later fails is dropped; captures, actions and edits are not.
-
-## Case-insensitive mode
-
-Literal strings, chars and words match regardless of case with `Parser.Parse(input, rule, ignoreCase: true)`. Character sets such as `upper` stay case-sensitive. Matching is case-sensitive by default, whereas REBOL's is case-insensitive by default.
+| `break` `reject` | `Break` `Reject` | leave the enclosing loop, succeeding / failing it |
+| `insert v` | `Insert(v)` | insert at the position and move past it |
+| `change r v` | `Change(r, v)` | replace what `r` matched |
+| `remove r` | `Remove(r)` | delete what `r` matched |
+| `collect v r` | `Collect("v", r)` | list of everything `r` keeps, in `Vars` |
+| `keep r` `keep pick r` | `Keep(r)` `KeepPick(r)` | add the match / only its first item |
+| `keep (@fn)` | `Keep(ctx => value)` | add a computed value; `null` adds nothing |
+| `if (@fn)` | `If(ctx => bool)` | succeed, consuming nothing, when the condition holds |
+| `(@name)` | `Do(ctx => ...)` | run a C# action |
+| `digit alpha alnum upper lower space newline tab` | `Digit` ... | character classes (text) |
+| `integer! decimal! string! word! block!` | `Integer` ... | datatypes (lists) |
+| bare word | `Ref("name")` | a named rule from the rule table passed to `Parse` |
 
 ## Differences from REBOL
 
-- Paren code is not evaluated. Actions are C# delegates bound with `(@name)`.
-- Matching is case-sensitive unless you pass `ignoreCase: true`.
-- Edits apply to a copy of the input and come back in `ParseResult.Output`.
-- Paren code in `keep (@fn)` and `if (@fn)` is bound by name, like actions: pass a `values` table to `Dialect.Read`, mapping names to `Func<Ctx, object?>`. `if` treats `false` and `null` as false and any other result as true.
-- Backtracking is plain recursive descent with no memoization, so pathological grammars can be slow.
-- Variables set inside an alternative that later fails are not rolled back (REBOL behaves the same way).
+- **No evaluated code.** `(@name)` calls a bound delegate; there is no interpreter behind the parens. `keep (@fn)` and `if (@fn)` take named value functions, passed as the `values` argument of `Dialect.Read`.
+- **Case-sensitive by default.** REBOL's parse is case-insensitive unless told otherwise; here you opt in with `ignoreCase: true`.
+- **Edits work on a copy.** `insert`, `change` and `remove` never modify your input; the edited result is `ParseResult.Output`.
+- **Rules are values.** A rule is an immutable object you build once and reuse; there is no global state.
+- Backtracking is plain recursive descent with no memoization, so pathological grammars can be slow. Captures, actions and edits made in a branch that later fails are not undone, as in REBOL.
 
 ## Performance
 
-Rules compile to specialized matcher nodes the first time they are used, so build a rule once and reuse it, as you would a `Regex`. `Parser.IsMatch(input, rule)` answers yes or no without allocating, for rules that do not capture or edit; `Parser.Parse` returns captures and edits. On flat text RebolParse runs between 0.4x and 1.4x the speed of .NET's interpreted regex, and it beats compiled regex on extraction and on recursive grammars; `RegexOptions.Compiled` still wins on plain validation. See [benchmarks](docs/Benchmarks.md) for the numbers and the one known slow path (`remove` on large inputs).
+Rules compile to specialized matcher nodes the first time they are used, so build a rule once and reuse it (a `static readonly` field is ideal), as you would a `Regex`. Text is matched as a `ReadOnlySpan<char>` with vectorized scanning for literals. `Parser.IsMatch` allocates nothing for rules that do not capture or edit; `Parser.Parse` returns captures and edits.
+
+On flat text RebolParse runs at or ahead of .NET's interpreted `Regex` on most tasks and ahead of `RegexOptions.Compiled` on extraction and shallow recursion, while `Compiled` still wins plain validation and deep recursion. The one known slow path is `remove` on very large inputs. [Benchmarks](docs/Benchmarks.md) has the numbers, the method, and how to reproduce them.
 
 ## Build
 
 ```bash
-dotnet test
-dotnet run --project samples/Samples
+dotnet test                                                   # 370+ tests, 100% line and branch coverage
+dotnet run --project samples/Samples                          # runnable examples
+dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"
 ```
 
 ## License

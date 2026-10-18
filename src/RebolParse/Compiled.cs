@@ -36,7 +36,7 @@ internal sealed class TextEngine
     }
 
     /// <summary>The text after the parse: the original string when nothing was edited.</summary>
-    public string Result() => Edited ? new string(buffer, 0, length) : original;
+    public string Result() => Edited ? new string(buffer!, 0, length) : original;
 
     /// <summary>
     /// Match a node at a point where its failure is absorbed (choice, loop, lookahead, scan). Every node

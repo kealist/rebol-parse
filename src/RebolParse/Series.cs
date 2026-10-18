@@ -1,15 +1,20 @@
 namespace RebolParse;
 
 /// <summary>A REBOL-style word value, for block-mode input.</summary>
+/// <param name="Name">The word's text. Words compare by name, and ignoring case under <c>ignoreCase</c>.</param>
 public sealed record Word(string Name)
 {
+    /// <summary>The word's name.</summary>
     public override string ToString() => Name;
 }
 
 /// <summary>Block input being parsed by the interpreter. Edits go to a private copy, so they never touch the caller's list.</summary>
 public interface ISeries
 {
+    /// <summary>The number of items.</summary>
     int Length { get; }
+
+    /// <summary>The item at <paramref name="index"/>.</summary>
     object this[int index] { get; }
 
     /// <summary>Length consumed if <paramref name="value"/> matches at <paramref name="pos"/>, else -1.</summary>
@@ -31,6 +36,7 @@ public interface ISeries
     object ToResult();
 }
 
+/// <summary>An <see cref="ISeries"/> over a list of values. Edits copy the list on first change, so the caller's list is never modified.</summary>
 public sealed class BlockSeries : ISeries
 {
     private IReadOnlyList<object> source;
@@ -39,6 +45,8 @@ public sealed class BlockSeries : ISeries
     private List<object>? edited;   // created on the first edit and kept for reuse
     private bool editing;
 
+    /// <param name="items">The values to parse.</param>
+    /// <param name="ignoreCase">Whether string, char and <see cref="Word"/> literals match regardless of case.</param>
     public BlockSeries(IReadOnlyList<object> items, bool ignoreCase = false)
     {
         source = items;
@@ -55,10 +63,14 @@ public sealed class BlockSeries : ISeries
 
     private IReadOnlyList<object> Items => editing ? edited! : source;
 
+    /// <inheritdoc />
     public int Length => Items.Count;
+    /// <inheritdoc />
     public object this[int index] => Items[index];
+    /// <inheritdoc />
     public bool Modified => editing;
 
+    /// <inheritdoc />
     public int MatchLiteral(int pos, object value) =>
         pos < Length && SameValue(Items[pos], value) ? 1 : -1;
 
@@ -70,6 +82,7 @@ public sealed class BlockSeries : ISeries
         _ => Equals(a, b),
     };
 
+    /// <inheritdoc />
     public object Slice(int start, int end)
     {
         var list = new List<object>(end - start);
@@ -92,6 +105,7 @@ public sealed class BlockSeries : ISeries
         editing = true;
     }
 
+    /// <inheritdoc />
     public void Remove(int start, int end)
     {
         if (end <= start) { CheckWritable(); return; }
@@ -99,6 +113,7 @@ public sealed class BlockSeries : ISeries
         edited!.RemoveRange(start, end - start);
     }
 
+    /// <inheritdoc />
     public int Insert(int pos, object? value)
     {
         if (value is null)
@@ -111,5 +126,6 @@ public sealed class BlockSeries : ISeries
         return 1;
     }
 
+    /// <inheritdoc />
     public object ToResult() => editing ? new List<object>(edited!) : source;
 }

@@ -20,7 +20,15 @@ public static class Dialect
         ["word!"] = P.WordType, ["block!"] = P.BlockType,
     };
 
-    /// <summary>Read a rule. The outer brackets are optional: "a b | c" and "[a b | c]" are equivalent.</summary>
+    /// <summary>
+    /// Read a rule from REBOL-style text. The outer brackets are optional: <c>a b | c</c> and <c>[a b | c]</c> are
+    /// equivalent. See docs/Reference.md for the full syntax.
+    /// </summary>
+    /// <param name="text">The rule text.</param>
+    /// <param name="actions">Named actions for <c>(@name)</c>.</param>
+    /// <param name="values">Named value functions for <c>keep (@name)</c> and <c>if (@name)</c>.</param>
+    /// <exception cref="FormatException">The text is malformed.</exception>
+    /// <exception cref="KeyNotFoundException">A <c>(@name)</c> has no entry in <paramref name="actions"/> or <paramref name="values"/>.</exception>
     public static Rule Read(string text, IReadOnlyDictionary<string, Action<Ctx>>? actions = null,
         IReadOnlyDictionary<string, Func<Ctx, object?>>? values = null)
     {
@@ -30,7 +38,10 @@ public static class Dialect
         return ReadAlt(tokens, ref i, bindings, closer: null); // a stray ']' throws inside ReadAlt
     }
 
-    /// <summary>Read several named rules, e.g. for recursive grammars. Pass the result as the parse rule table.</summary>
+    /// <summary>Read several named rules, e.g. for recursive grammars. Pass the result as the <c>rules</c> argument of <c>Parse</c>.</summary>
+    /// <param name="defs">Rule names mapped to rule text.</param>
+    /// <param name="actions">Named actions for <c>(@name)</c>.</param>
+    /// <param name="values">Named value functions for <c>keep (@name)</c> and <c>if (@name)</c>.</param>
     public static Dictionary<string, Rule> ReadRules(
         IEnumerable<KeyValuePair<string, string>> defs, IReadOnlyDictionary<string, Action<Ctx>>? actions = null,
         IReadOnlyDictionary<string, Func<Ctx, object?>>? values = null) =>

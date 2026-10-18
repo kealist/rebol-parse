@@ -2,7 +2,7 @@
 
 Fifteen short lessons, each with exercises. By the end you will have written an INI-file parser from scratch.
 
-**How to work through it.** Read a lesson, try the exercises before opening the solution, and run your rule against the listed inputs. Every solution in this tutorial is checked by `tests/RebolParse.Tests/TutorialTests.cs`, so the answers are known to work.
+**How to work through it.** Read a lesson, try the exercises before opening the solution, and run your rule against the listed inputs. Every solution in this tutorial is checked by `tests/RebolParse.Tests/TutorialTests.cs`, so the answers are known to work. When a lesson leaves a detail out, [the reference](Reference.md) has it.
 
 A scratch file is the easiest place to experiment. From the repo root:
 
@@ -37,6 +37,8 @@ A rule is a description of what input looks like. `Parser.Parse(input, rule)` an
 ```csharp
 Parser.Parse("hello", Dialect.Read("\"hello\"")).Matched;   // true
 ```
+
+If you only need the yes or no, `Parser.IsMatch(input, rule)` does the same job without allocating; it cannot return captures or edits, so the later lessons use `Parse`. Build a rule once and reuse it: the first parse with a rule compiles it.
 
 A string in the rule matches that exact text. **The rule must consume the whole input**, so `"hello!"` does not match `"hello"`. To allow leftovers, pass `partial: true`:
 

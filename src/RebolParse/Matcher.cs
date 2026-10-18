@@ -1,7 +1,8 @@
 namespace RebolParse;
 
 /// <summary>
-/// State shared across a whole parse (including nested <c>into</c> blocks). During <see cref="Parser.IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/>
+/// The state of a parse in progress, handed to actions and value functions: captures so far, saved marks, and
+/// the current position. State is shared across a whole parse (including nested <c>into</c> blocks). During <see cref="Parser.IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/>
 /// one instance is reused for every call on a thread, so do not keep a reference to it.
 /// </summary>
 public sealed class Ctx
@@ -20,6 +21,7 @@ public sealed class Ctx
     public Dictionary<string, object?> Vars => vars ??= [];
     /// <summary>Positions saved by <c>name:</c> marks.</summary>
     public Dictionary<string, int> Marks => marks ??= [];
+    /// <summary>The named rules passed to the parse; what <c>Ref</c> looks names up in.</summary>
     public IReadOnlyDictionary<string, Rule> Rules { get; internal set; } = NoRules;
 
     /// <summary>Current position in the series being matched when an action runs.</summary>
@@ -76,9 +78,11 @@ public sealed class Ctx
 /// <param name="Output">The input after any <c>insert</c>/<c>change</c>/<c>remove</c> edits: a string, or a list for block input. The caller's input is never modified.</param>
 public sealed record ParseResult(bool Matched, int Position, IReadOnlyDictionary<string, object?> Vars, object? Output = null)
 {
+    /// <summary>A result is true when it matched, so <c>if (Parser.Parse(...))</c> works.</summary>
     public static implicit operator bool(ParseResult r) => r.Matched;
 }
 
+/// <summary>Runs rules against input. <see cref="Parse(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/> returns captures and edits; <see cref="IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/> only says whether the rule matched, and allocates nothing.</summary>
 public static class Parser
 {
     /// <summary>
