@@ -120,6 +120,19 @@ pair.Parse("width=640").Vars["value"];    // "640"
 | `Chars("a-z_")` | `CharIf` over a regex-style class; `charset "a-z_"` in text |
 | `rule.IsMatch(input)` `rule.Parse(input)` | `Parser.IsMatch(input, rule)` `Parser.Parse(input, rule)` |
 
+## Compile to IL
+
+A rule you run many times can be compiled to IL, like `RegexOptions.Compiled`. It matches exactly what the interpreter matches, only faster:
+
+```csharp
+static readonly Rule Phone = Dialect.Read("3 digit \"-\" 4 digit").Compiled();
+Parser.IsMatch("555-1234", Phone);      // 10 ns, against 30 ns interpreted and 14 ns for a compiled Regex
+
+var rules = Dialect.ReadGrammar(grammar).Compiled();   // compile every rule in a table
+```
+
+Compile once and reuse; the first compile in a process takes about 30 ms. Rules that use `break`, `reject`, `collect`, `keep` or an edit run on the interpreter automatically, so `.Compiled()` is always safe. See [Compiling to IL](docs/Reference.md#compiling-to-il) for the details.
+
 ## Semantics at a glance
 
 - A parse succeeds only if the rule matches **and consumes all the input**. Pass `partial: true` to allow leftovers.
@@ -132,9 +145,9 @@ pair.Parse("width=640").Vars["value"];    // "640"
 
 | | |
 |---|---|
-| [Tutorial](docs/Tutorial.md) | Fifteen lessons with exercises and solutions, ending in an INI-file parser. Start here if you are new to parse. |
-| [Reference](docs/Reference.md) | Every keyword and the text syntax, what a parse returns, errors, what backtracking undoes, and limits. |
-| [Benchmarks](docs/Benchmarks.md) | Comparison with .NET `Regex`, with numbers and caveats. |
+| [Tutorial](docs/Tutorial.md) | Sixteen lessons with exercises and solutions, from your first rule to an INI-file parser and compiling to IL. Start here if you are new to parse. |
+| [Reference](docs/Reference.md) | Every keyword and the text syntax, grammars, what a parse returns, errors, what backtracking undoes, compiling to IL, and limits. |
+| [Benchmarks](docs/Benchmarks.md) | Comparison with .NET `Regex` and `System.Text.Json`, the interpreter against the IL back end, with numbers and caveats. |
 | [Samples](samples/README.md) | Eight runnable programs that check their own results: a calculator, a JSON reader, INI, CSV, log analysis, a source cleaner, a block-mode robot language, and a template engine. |
 
 The public API is fully documented with XML comments, so IntelliSense shows what each keyword does.
@@ -148,10 +161,10 @@ REBOL keywords, and the matching fluent builder from `using static RebolParse.P;
 | `"abc"` `#"a"` | `"abc"` `'a'` | implicit conversion to `Rule` |
 | `a b` | `a + b` | sequence; one side must already be a `Rule` (or use `Seq(a, b)`) |
 | `a \| b` | `a \| b` | ordered choice (or `Choice(a, b)`) |
-| `some` `any` `opt` | `Some` `Any` `Opt` | |
+| `some` `any` `opt` | `Some` `Any` `Opt` | `while r` is accepted as another spelling of `any r` |
 | `3 r` `2 4 r` | `Rep(3, r)` `Rep(2, 4, r)` | |
 | `skip` `end` `none` `fail` | `Skip` `End` `None` `Fail` | |
-| `ahead` `not` | `Ahead` `Not` | lookahead, consume nothing |
+| `ahead` `not` | `Ahead` `Not` | lookahead, consume nothing; `and r` is another spelling of `ahead r` |
 | `to` `thru` | `To` `Thru` | scan forward to a match |
 | `copy v r` `set v r` | `Copy("v", r)` `Set("v", r)` | results in `ParseResult.Vars` |
 | `into r` | `Into(r)` | descends into a nested list |
@@ -177,6 +190,7 @@ REBOL keywords, and the matching fluent builder from `using static RebolParse.P;
 - **Case-sensitive by default.** REBOL's parse is case-insensitive unless told otherwise; here you opt in with `ignoreCase: true`.
 - **Edits work on a copy.** `insert`, `change` and `remove` never modify your input; the edited result is `ParseResult.Output`.
 - **Rules are values.** A rule is an immutable object you build once and reuse; there is no global state.
+- **Not every keyword.** `then`, `return`, `limit` and the `only` refinements are not implemented. `while` is an alias of `any` and has its no-progress guard, so a rule that matches nothing cannot loop forever.
 - Backtracking is plain recursive descent with no memoization, so pathological grammars can be slow. Captures, actions and edits made in a branch that later fails are not undone, as in REBOL.
 
 ## Performance

@@ -125,7 +125,7 @@ A `ParseResult` converts to `bool`, so `if (Parser.Parse(...))` works. Captures 
 
 ## Threading and reuse
 
-Rules are immutable and safe to share across threads. The first parse with a rule compiles it into a faster internal form, cached for that rule instance, so build rules once (a `static readonly` field is ideal) rather than per call. Re-reading the same text with `Dialect.Read` creates a new rule that compiles again. `IsMatch` keeps its working state per thread; it is safe to call from many threads and to call re-entrantly from an action.
+Rules are immutable and safe to share across threads. The first parse with a rule compiles it into a faster internal form, cached for that rule instance, so build rules once (a `static readonly` field is ideal) rather than per call. Re-reading the same text with `Dialect.Read` creates a new rule that compiles again. Compiled rules are just as safe to share. `IsMatch` keeps its working state per thread; it is safe to call from many threads and to call re-entrantly from an action.
 
 ## Compiling to IL
 

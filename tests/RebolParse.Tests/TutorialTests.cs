@@ -280,4 +280,28 @@ public class TutorialTests
         Assert.True(Parser.Parse(ini, Ref("file"), rules).Matched);
         Assert.Equal(["core.name=puter", "extra.x=1", "extra.y=2"], entries);
     }
+
+    // ---- 16 Making it fast ----
+
+    [Fact]
+    public void Ch16()
+    {
+        var phone = R("3 digit \"-\" 4 digit").Compiled();
+        Assert.True(Parser.IsMatch("555-1234", phone));
+        Assert.True(((CompiledRule)phone).IsNative);
+
+        var rules = Dialect.ReadGrammar("group = \"(\" any group \")\"").Compiled();
+        Assert.True(Parser.Parse("(()())", Ref("group"), rules).Matched);
+        Assert.False(Parser.Parse("(()", Ref("group"), rules).Matched);
+
+        var list = R("some digit any [\",\" some digit]").Compiled();
+        Assert.True(Parser.IsMatch("1,22,333", list));
+        Assert.False(Parser.IsMatch("1,,2", list));
+        Assert.True(((CompiledRule)list).IsNative);
+
+        Assert.True(((CompiledRule)R("some alpha").Compiled()).IsNative);
+        Assert.True(((CompiledRule)R("copy w some alpha").Compiled()).IsNative);
+        Assert.False(((CompiledRule)R("any [remove digit | skip]").Compiled()).IsNative);
+        Assert.False(((CompiledRule)R("collect o some [keep alpha]").Compiled()).IsNative);
+    }
 }

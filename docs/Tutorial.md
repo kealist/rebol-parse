@@ -1,6 +1,6 @@
 # RebolParse tutorial
 
-Fifteen short lessons, each with exercises. By the end you will have written an INI-file parser from scratch.
+Sixteen short lessons, each with exercises. By the end you will have written an INI-file parser from scratch.
 
 **How to work through it.** Read a lesson, try the exercises before opening the solution, and run your rule against the listed inputs. Every solution in this tutorial is checked by `tests/RebolParse.Tests/TutorialTests.cs`, so the answers are known to work. When a lesson leaves a detail out, [the reference](Reference.md) has it.
 
@@ -184,7 +184,7 @@ For 4: `"#" 6 charset "0-9a-fA-F"`.
 | `to r` | skip forward until `r` would match, **without** consuming it |
 | `thru r` | the same, but consume `r` as well |
 | `not r` | succeeds if `r` does not match; consumes nothing |
-| `ahead r` | succeeds if `r` matches; consumes nothing |
+| `ahead r` | succeeds if `r` matches; consumes nothing (`and r` means the same) |
 | `skip` | any one item |
 | `end` | only at the end of the input |
 
@@ -550,7 +550,56 @@ The key is `some [not [space | "="] skip]`: any characters up to whitespace or `
 
 </details>
 
-### Where next
+---
+
+## 16. Making it fast
+
+A rule you read once and run many times can be compiled to IL, the way `RegexOptions.Compiled` does for a regex. It changes nothing about what the rule matches, only how fast it runs.
+
+```csharp
+var phone = Dialect.Read("3 digit \"-\" 4 digit").Compiled();
+Parser.IsMatch("555-1234", phone);        // true; the first call generates the IL
+((CompiledRule)phone).IsNative;           // true: it really is IL
+```
+
+Compile once and keep the rule in a field. Building the IL takes a fraction of a millisecond to a few milliseconds (the first time in a process, about 30 ms), so a rule you run once is better left alone.
+
+A rule table compiles the same way, and every rule in it should be compiled so they can call each other directly:
+
+```csharp
+var rules = Dialect.ReadGrammar("group = \"(\" any group \")\"").Compiled();
+Parser.Parse("(()())", Ref("group"), rules).Matched;   // true
+```
+
+Not every rule can become IL. `break`, `reject`, `collect`, `keep`, `insert`, `change` and `remove` stay on the interpreter. Asking for `.Compiled()` on such a rule is harmless: it runs on the interpreter and gives the same answer, and `IsNative` is `false`. Block input always uses the interpreter.
+
+Edits are already fast without compiling. `any [remove some digit | skip]` over a megabyte of text takes about a millisecond, because the engine keeps the text in a buffer with a gap instead of shifting it on every removal.
+
+### Exercises
+
+1. Compile `some digit any ["," some digit]` and check that it matches `1,22,333` and rejects `1,,2`, and that `IsNative` is `true`.
+2. Compile the table from lesson 9 (balanced parentheses) and check `(()())` and `(()`.
+3. Which of these are native: `some alpha`, `any [remove digit | skip]`, `copy w some alpha`, `collect o some [keep alpha]`? Check with `IsNative`.
+
+<details><summary>Solutions</summary>
+
+```csharp
+var list = Dialect.Read("some digit any [\",\" some digit]").Compiled();
+Parser.IsMatch("1,22,333", list);   // true
+Parser.IsMatch("1,,2", list);       // false
+((CompiledRule)list).IsNative;      // true
+```
+
+For 2, `Dialect.ReadGrammar("group = \"(\" any group \")\"").Compiled()` and parse from `Ref("group")`.
+
+For 3: `some alpha` and `copy w some alpha` are native. `any [remove digit | skip]` and `collect o some [keep alpha]` are not.
+
+</details>
+
+---
+
+## Where next
+
 
 - Add `;` comment lines to the INI grammar.
 - Turn the parser into one that rewrites a file: `change` the value of one key and read `Output`.
