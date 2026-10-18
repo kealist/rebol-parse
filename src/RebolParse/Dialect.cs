@@ -151,7 +151,9 @@ public static class Dialect
             case "some": return new Repeat(ReadItem(t, ref i, acts), 1, -1);
             case "any": return new Repeat(ReadItem(t, ref i, acts), 0, -1);
             case "opt": return new Repeat(ReadItem(t, ref i, acts), 0, 1);
-            case "ahead": return new Ahead(ReadItem(t, ref i, acts));
+            case "while": return new Repeat(ReadItem(t, ref i, acts), 0, -1);
+            case "ahead":
+            case "and": return new Ahead(ReadItem(t, ref i, acts));
             case "not": return new Not(ReadItem(t, ref i, acts));
             case "to": return new To(ReadItem(t, ref i, acts));
             case "thru": return new Thru(ReadItem(t, ref i, acts));

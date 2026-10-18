@@ -167,6 +167,22 @@ public class TutorialTests
             Assert.False(Parser.Parse(s, Ref("list"), lists).Matched, s);
     }
 
+    [Fact]
+    public void Ch9_grammar_text_and_ch3_chaining()
+    {
+        var rules = Dialect.ReadGrammar("""
+            item = some digit | list
+            list = "[" opt [item any ["," item]] "]"
+            """);
+        Assert.True(Parser.Parse("[1,[2,3]]", Ref("list"), rules).Matched);
+        Assert.False(Parser.Parse("[1,]", Ref("list"), rules).Matched);
+
+        var r = Parser.Parse("abc", Alpha.Some().Copy("word"));
+        Assert.Equal("abc", r.Vars["word"]);
+        Assert.True(Parser.Parse("123", Digit.Times(2, 4)).Matched);
+        Assert.False(Parser.Parse("1", Digit.Times(2, 4)).Matched);
+    }
+
     // ---- 10 Block mode ----
 
     [Fact]

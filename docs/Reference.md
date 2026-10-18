@@ -63,7 +63,8 @@ As always with C# operators, one operand of `+` or `\|` must already be a `Rule`
 | `fail` | never | n/a |
 | `some r` `any r` `opt r` | `r` one or more, zero or more, zero or one times | what `r` matched |
 | `n r` `n m r` | `r` exactly `n` times, or between `n` and `m` | what `r` matched |
-| `ahead r` | if `r` matches here | nothing |
+| `while r` | `r` zero or more times; same as `any r` (REBOL's `while` has no no-progress guard, this one does) | what `r` matched |
+| `ahead r`, `and r` | if `r` matches here | nothing |
 | `not r` | if `r` does not match here | nothing |
 | `to r` | scans forward to where `r` matches | up to, not including, the match |
 | `thru r` | scans forward to where `r` matches | up to and including the match |

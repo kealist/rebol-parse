@@ -122,6 +122,8 @@ Choice("a", Seq("b", "c"))
 
 `Choice(...)` and `Seq(...)` take any number of rules and avoid the problem entirely.
 
+Rules also chain: `Alpha.Some().Copy("word")` is `copy word some alpha`, and `Digit.Times(2, 4)` is `2 4 digit`. The full list is in the [reference](Reference.md#fluent-operators-and-chained-forms).
+
 ### Exercises
 
 1. Build `"a" | "b" "c"` with the fluent API. It accepts `a` and `bc` and rejects `b`, `ab`, `c`.
@@ -304,6 +306,16 @@ var rules = Dialect.ReadRules(new Dictionary<string, string>
     ["group"] = "\"(\" any group \")\"",
 });
 Parser.Parse("(()())", Ref("group"), rules).Matched;   // true
+```
+
+A grammar with several rules reads better as `name = rule` definitions, which `Dialect.ReadGrammar` turns into the same table:
+
+```csharp
+var rules = Dialect.ReadGrammar("""
+    item = some digit | list
+    list = "[" opt [item any ["," item]] "]"
+    """);
+Parser.Parse("[1,[2,3]]", Ref("list"), rules).Matched;   // true
 ```
 
 Avoid **left recursion** (`expr = expr "+" digit`). The rule calls itself without consuming anything, so it recurses until the stack overflows.
