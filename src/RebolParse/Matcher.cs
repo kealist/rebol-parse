@@ -100,9 +100,7 @@ public static class Parser
         var text = engine.Reset(input, ignoreCase, ctx, isReadOnly: false);
         var pos = 0;
         var ok = node.Match(engine, ref text, ref pos);
-        var result = new ParseResult(ok && (partial || pos == text.Length), pos, ctx.VarsOrEmpty, engine.Result());
-        engine.Clear();   // hand the edit buffer back to the pool
-        return result;
+        return new ParseResult(ok && (partial || pos == text.Length), pos, ctx.VarsOrEmpty, engine.Result());
     }
 
     /// <summary>Parse a block of values (chars, strings, numbers, <see cref="Word"/>, nested lists).</summary>

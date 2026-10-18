@@ -46,17 +46,27 @@ internal sealed class TextEngine
     {
         original = "";
         Ctx = null!;
-        if (buffer != null) System.Buffers.ArrayPool<char>.Shared.Return(buffer);   // edited text is copied out by Result first
+        ReleaseBuffer();
+    }
+
+    /// <summary>The text after the parse: the original string when nothing was edited. Call it once, at the end: it gives the edit buffer back.</summary>
+    public string Result()
+    {
+        var result = !Edited ? original : string.Create(length - gapSize, this, static (dest, e) =>
+        {
+            e.buffer.AsSpan(0, e.gapStart).CopyTo(dest);
+            e.buffer.AsSpan(e.gapStart + e.gapSize, e.length - e.gapStart - e.gapSize).CopyTo(dest[e.gapStart..]);
+        });
+        ReleaseBuffer();
+        return result;
+    }
+
+    private void ReleaseBuffer()
+    {
+        if (buffer != null) System.Buffers.ArrayPool<char>.Shared.Return(buffer);
         buffer = null;
         bufferHolds = false;
     }
-
-    /// <summary>The text after the parse: the original string when nothing was edited.</summary>
-    public string Result() => !Edited ? original : string.Create(length - gapSize, this, static (dest, e) =>
-    {
-        e.buffer.AsSpan(0, e.gapStart).CopyTo(dest);
-        e.buffer.AsSpan(e.gapStart + e.gapSize, e.length - e.gapStart - e.gapSize).CopyTo(dest[e.gapStart..]);
-    });
 
     private ReadOnlySpan<char> View()
     {
