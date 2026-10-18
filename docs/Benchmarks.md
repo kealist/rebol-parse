@@ -15,8 +15,8 @@ Parse rules are built once and reused, as `Regex` objects are. Times are the mea
 | | 1,000 lines | 214 µs, 126 KB | n/a (captures) | 144 µs, 305 KB | 86 µs, 305 KB |
 | Extract words | 1 KB | 9.6 µs, 10 KB | n/a (collects) | 15.2 µs, 41 KB | 9.9 µs, 41 KB |
 | | 100 KB | 1.06 ms, 1.05 MB | n/a (collects) | 4.54 ms, 4.07 MB | 4.15 ms, 4.07 MB |
-| Strip digits (`remove` vs `Replace`) | 1 KB | 13.8 µs, 5.4 KB | n/a (edits) | 6.3 µs, 1.4 KB | 8.6 µs, 1.4 KB |
-| | 100 KB | 23.1 ms, 499 KB | n/a (edits) | 536 µs, 109 KB | 668 µs, 109 KB |
+| Strip digits (`remove` vs `Replace`) | 1 KB | 9.7 µs, 5.4 KB | n/a (edits) | 6.5 µs, 1.4 KB | 4.4 µs, 1.4 KB |
+| | 100 KB | 771 µs, 499 KB | n/a (edits) | 540 µs, 109 KB | 680 µs, 109 KB |
 | Build the matcher | `3 digit "-" 4 digit` | 318 ns (text), 103 ns (fluent) | | 701 ns | 4,138 ns |
 
 Building the matcher does not include compiling the rule tree to nodes, which happens on first use and is cached per rule instance.
@@ -27,7 +27,7 @@ Building the matcher does not include compiling the rule tree to nodes, which ha
 - **Against `RegexOptions.Compiled`, which emits IL, it wins on extraction (1-4x) and loses on plain validation (2.7x slower on the phone number, about even on the number list) and on recursion (1.4x slower at depth 10, 3x at depth 1000).** That gap is the cost of a tree of virtual calls against straight-line generated code; closing it would mean generating IL too.
 - **How it got here.** Rules compile once into specialized nodes: a loop over a character class is one tight loop, `to`/`thru` on a literal uses the vectorized `IndexOf`, literal strings use `StartsWith`, and nodes that cannot break, reject, keep or edit skip the backtracking bookkeeping. Text is matched as a `ReadOnlySpan<char>`, so there is no copy of the input and no per-character interface call. Before this step RebolParse was 3-8x slower than regex on these tasks.
 - **`Parser.IsMatch` allocates nothing.** `Parse` allocates about 120 B plus whatever it captures; it never copies input it does not edit.
-- **`remove` on large inputs is still the slow path:** 43x slower than `Regex.Replace` on 100 KB, because each removal shifts the rest of the buffer and the loop is quadratic. Collect the pieces you want with `collect` and join them instead.
+- **`remove` is within 1.1-1.4x of `Regex.Replace`.** Edits go through a gap buffer: a removal widens a gap instead of shifting the rest of the text, so a left-to-right sweep moves each character at most once. Before this it was 43x slower on 100 KB (23 ms), because every removal shifted the tail and the loop was quadratic.
 - **Setup cost favours RebolParse.** Reading rule text costs under half of constructing an interpreted regex and a thirteenth of a compiled one.
 
 Pick RebolParse for grammars that are awkward or impossible as regex (recursion, structured block input, rules that capture and edit as they go) and for readability. For a hot loop that only validates flat text, `RegexOptions.Compiled` is still the fastest option.

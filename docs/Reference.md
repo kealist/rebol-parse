@@ -131,5 +131,5 @@ Rules are immutable and safe to share across threads. The first parse with a rul
 
 - Recursion depth is bounded by the stack: a rule that recurses a few thousand levels deep on one thread can overflow it. Left recursion (`expr = expr "+" digit`) recurses forever; rewrite it with a loop.
 - Backtracking is plain recursive descent with no memoization, so pathological grammars can take exponential time.
-- `remove` on a large string shifts the rest of the text on every call; for bulk deletion, `collect` what you want to keep.
+- Edits to a string are cheap when they sweep left to right, as in `any [remove r | skip]`. Putting the position back before an earlier edit (a failed branch, `to` or `ahead` around an edit, a `:mark`) makes the engine close up its gap, which costs a copy of the rest of the text.
 - Marks saved before an edit are not adjusted for it.

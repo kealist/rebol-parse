@@ -15,8 +15,15 @@ internal sealed class TextEngine
     public bool Edited;
     private string original = "";
     private bool readOnly;
-    private char[]? buffer;   // the text once edited; grows as needed
-    private int length;
+    private char[]? buffer;   // the text once edited, with a gap: see below
+    private int length;       // used chars in the buffer, the gap included
+    private int gapStart;     // logical index where the gap sits
+    private int gapSize;      // chars in the gap; a removal widens it instead of shifting the tail
+
+    // Once edited, the text is buffer[0..gapStart) + buffer[gapStart+gapSize..length). A removal just widens the
+    // gap, so a sweep of removals from left to right moves each char at most once. Nodes read the text through a
+    // span that starts after the gap, which makes every index at or beyond gapStart correct. Indices before it
+    // are stale, so whoever puts the position back before gapStart calls Settle first, which closes the gap.
 
     /// <summary>Start a parse over <paramref name="text"/>. The returned span is what nodes match against.</summary>
     public ReadOnlySpan<char> Reset(string text, bool ignoreCase, Ctx ctx, bool isReadOnly)
@@ -26,6 +33,7 @@ internal sealed class TextEngine
         Ctx = ctx;
         readOnly = isReadOnly;
         Edited = false;
+        gapStart = gapSize = 0;
         return text.AsSpan();
     }
 
@@ -36,7 +44,28 @@ internal sealed class TextEngine
     }
 
     /// <summary>The text after the parse: the original string when nothing was edited.</summary>
-    public string Result() => Edited ? new string(buffer!, 0, length) : original;
+    public string Result() => !Edited ? original : string.Create(length - gapSize, this, static (dest, e) =>
+    {
+        e.buffer.AsSpan(0, e.gapStart).CopyTo(dest);
+        e.buffer.AsSpan(e.gapStart + e.gapSize, e.length - e.gapStart - e.gapSize).CopyTo(dest[e.gapStart..]);
+    });
+
+    private ReadOnlySpan<char> View()
+    {
+        var n = length - gapSize;
+        return gapStart >= n ? new ReadOnlySpan<char>(buffer, 0, n) : new ReadOnlySpan<char>(buffer, gapSize, n);
+    }
+
+    /// <summary>
+    /// Make <paramref name="text"/> readable from <paramref name="pos"/> on. Call it wherever the position can
+    /// move back before the last edit; it closes the gap only when it has to.
+    /// </summary>
+    public void Settle(ref ReadOnlySpan<char> text, int pos)
+    {
+        if (gapSize == 0 || pos >= gapStart || gapStart >= length - gapSize) return;
+        MoveGap(length - gapSize);
+        text = View();
+    }
 
     /// <summary>
     /// Match a node at a point where its failure is absorbed (choice, loop, lookahead, scan). Every node
@@ -51,7 +80,9 @@ internal sealed class TextEngine
         var wasRejecting = ctx.RejectRequested;
         var collected = ctx.Collected;
         var kept = collected is { Count: > 0 } ? collected.Peek().Count : 0;
-        if (node.Match(this, ref text, ref pos)) return true;
+        var ok = node.Match(this, ref text, ref pos);
+        Settle(ref text, pos);
+        if (ok) return true;
         ctx.BreakRequested = wasBreaking;
         ctx.RejectRequested = wasRejecting;
         if (collected is { Count: > 0 })
@@ -67,31 +98,50 @@ internal sealed class TextEngine
         if (readOnly) throw new InvalidOperationException("This parse is read-only (IsMatch); use Parser.Parse to edit input.");
     }
 
-    /// <summary>Copy the text into the edit buffer the first time it changes, with room for <paramref name="extra"/> more chars.</summary>
-    private void BeginEdit(ReadOnlySpan<char> text, int extra)
+    /// <summary>Copy the text into the edit buffer the first time it changes.</summary>
+    private void BeginEdit(ReadOnlySpan<char> text)
     {
-        var needed = text.Length + extra;
-        if (!Edited)
+        if (Edited) return;
+        buffer = new char[Math.Max(text.Length, 64) * 2];
+        text.CopyTo(buffer);
+        length = text.Length;
+        gapStart = gapSize = 0;
+        Edited = true;
+    }
+
+    /// <summary>Move the gap so it starts at logical index <paramref name="to"/>.</summary>
+    private void MoveGap(int to)
+    {
+        if (gapSize > 0)
         {
-            buffer = new char[Math.Max(needed, 64) * 2];
-            text.CopyTo(buffer);
-            length = text.Length;
-            Edited = true;
+            if (to > gapStart) Array.Copy(buffer!, gapStart + gapSize, buffer!, gapStart, to - gapStart);
+            else if (to < gapStart) Array.Copy(buffer!, to, buffer!, to + gapSize, gapStart - to);
         }
-        else if (buffer!.Length < needed)
-        {
-            Array.Resize(ref buffer, needed * 2);
-        }
+        gapStart = to;
+    }
+
+    /// <summary>Make sure the gap can hold <paramref name="needed"/> chars.</summary>
+    private void GrowGap(int needed)
+    {
+        if (gapSize >= needed) return;
+        var extra = Math.Max(needed - gapSize, length);
+        var grown = new char[length + extra];
+        var tail = gapStart + gapSize;
+        Array.Copy(buffer!, 0, grown, 0, gapStart);
+        Array.Copy(buffer!, tail, grown, tail + extra, length - tail);
+        buffer = grown;
+        gapSize += extra;
+        length += extra;
     }
 
     public void Remove(ref ReadOnlySpan<char> text, int start, int end)
     {
         CheckWritable();
         if (end <= start) return;
-        BeginEdit(text, 0);
-        Array.Copy(buffer!, end, buffer!, start, length - end);
-        length -= end - start;
-        text = new ReadOnlySpan<char>(buffer, 0, length);
+        BeginEdit(text);
+        MoveGap(start);
+        gapSize += end - start;
+        text = View();
     }
 
     public int Insert(ref ReadOnlySpan<char> text, int pos, object? value)
@@ -99,11 +149,13 @@ internal sealed class TextEngine
         CheckWritable();
         var str = value?.ToString() ?? "";
         if (str.Length == 0) return 0;
-        BeginEdit(text, str.Length);
-        Array.Copy(buffer!, pos, buffer!, pos + str.Length, length - pos);
-        str.CopyTo(0, buffer!, pos, str.Length);
-        length += str.Length;
-        text = new ReadOnlySpan<char>(buffer, 0, length);
+        BeginEdit(text);
+        MoveGap(pos);
+        GrowGap(str.Length);
+        str.CopyTo(0, buffer!, gapStart, str.Length);
+        gapStart += str.Length;
+        gapSize -= str.Length;
+        text = View();
         return str.Length;
     }
 }
@@ -395,7 +447,9 @@ internal sealed class AheadNode(Node body) : Node
     public override bool Match(TextEngine e, ref ReadOnlySpan<char> text, ref int pos)
     {
         var p = pos;
-        return e.Try(body, ref text, ref p);
+        var ok = e.Try(body, ref text, ref p);
+        e.Settle(ref text, pos);
+        return ok;
     }
 }
 
@@ -417,6 +471,7 @@ internal sealed class ScanNode(Node body, bool thru) : Node
             var q = p;
             if (!e.Try(body, ref text, ref q)) continue;
             pos = thru ? q : p;
+            e.Settle(ref text, pos);   // `to` puts the position back before the body's edits
             return true;
         }
         return false;
@@ -483,6 +538,7 @@ internal sealed class CopyNode(string var, Node body) : Node
     {
         var start = pos;
         if (!body.Match(e, ref text, ref pos)) return false;
+        e.Settle(ref text, start);
         e.Ctx.Vars[var] = text.Slice(start, pos - start).ToString();
         return true;
     }
@@ -494,6 +550,7 @@ internal sealed class SetNode(string var, Node body) : Node
     {
         var start = pos;
         if (!body.Match(e, ref text, ref pos)) return false;
+        e.Settle(ref text, start);
         e.Ctx.Vars[var] = pos > start ? text[start] : null;
         return true;
     }
@@ -521,6 +578,7 @@ internal sealed class KeepNode(Node body) : Node
         var target = e.Ctx.KeepTarget();
         var start = pos;
         if (!body.Match(e, ref text, ref pos)) return false;
+        e.Settle(ref text, start);
         target.Add(text.Slice(start, pos - start).ToString());
         return true;
     }
@@ -533,6 +591,7 @@ internal sealed class KeepPickNode(Node body) : Node
         var target = e.Ctx.KeepTarget();
         var start = pos;
         if (!body.Match(e, ref text, ref pos)) return false;
+        e.Settle(ref text, start);
         if (pos > start) target.Add(text[start]);
         return true;
     }
@@ -592,6 +651,7 @@ internal sealed class SeekNode(string name) : Node
     public override bool Match(TextEngine e, ref ReadOnlySpan<char> text, ref int pos)
     {
         pos = e.Ctx.MarkAt(name);
+        e.Settle(ref text, pos);
         return true;
     }
 }
