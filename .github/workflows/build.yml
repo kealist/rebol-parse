@@ -52,7 +52,7 @@ jobs:
     permissions:
       id-token: write   # lets the job ask GitHub for the token that nuget.org trusts
       contents: read
-    # environment: nuget   # optional: add a required reviewer, and name the environment in the nuget.org policy too
+    environment: nuget   # the same name goes in the nuget.org policy; add required reviewers to it in GitHub to approve each release
     steps:
       - uses: actions/download-artifact@v4
         with:

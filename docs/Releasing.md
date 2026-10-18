@@ -15,9 +15,10 @@ This runs the tests, packs `RebolParse.0.2.0.nupkg` and its `.snupkg` symbols in
 Trusted publishing lets the workflow in `.github/workflows/build.yml` prove to nuget.org who it is, and swaps that proof for an API key that lives for a few minutes. There is no long-lived key to leak.
 
 1. **First release by hand.** A policy belongs to a package you own, so the first version of a new package goes up with an ordinary API key: create one at nuget.org (Account, API keys, scope *Push new packages and package versions*, glob `RebolParse*`), then `NUGET_API_KEY=... scripts/pack.sh 0.1.0 --push`. (If your nuget.org account lets you create a policy before the package exists, you can skip this step; I have not checked.)
-2. **Add the policy.** On nuget.org, open your account menu, *Trusted Publishing*, and create a policy: repository owner `kealist`, repository `rebol-parse`, workflow file `build.yml`. If you use the optional `environment:` line in the workflow, give the same environment name here.
+2. **Add the policy.** On nuget.org, open your account menu, *Trusted Publishing*, and create a policy: repository owner `kealist`, repository `rebol-parse`, workflow file `build.yml`. In the *environment name* field type `nuget`, which is the name of the environment the `publish` job runs in. The two must match exactly. (Leaving the field blank also works, since the policy then accepts any environment.)
 3. **Tell the workflow who you are.** In the GitHub repository settings add a secret `NUGET_USER` containing your nuget.org *profile name* (not your email). It is only a name, not a key.
-4. Delete the API key from step 1.
+4. In the GitHub repository settings, *Environments*, open `nuget` (it is created the first time the job runs, or you can create it first). Adding yourself as a *required reviewer* there makes every release wait for your approval, so a tag pushed by mistake cannot publish.
+5. Delete the API key from step 1.
 
 ## Releasing a version
 
