@@ -196,6 +196,7 @@ public class CompiledRuleTests
     [InlineData("remove \"a\" to #\"C\" to end")]
     [InlineData("remove \"a\" thru #\"c\" to end")]
     [InlineData("remove \"a\" to \"BC\" to end")]
+    [InlineData("any [remove \"abcab\" | skip]")]
     public void Edits_compile_and_agree(string text)
     {
         var rule = Dialect.Read(text);
@@ -471,5 +472,39 @@ public class CompiledRuleTests
         foreach (var input in new[] { "ab,cd,", "ab,cd", "" })
             Assert.Equal(Describe(Parser.Parse(input, Dialect.Read("any item"), free, partial: true)),
                          Describe(Parser.Parse(input, Dialect.Read("any item").Compiled(fast), fast, partial: true)));
+    }
+
+    [Fact]
+    public void Short_literals_are_compared_inline_and_agree_with_the_interpreter()
+    {
+        foreach (var literal in new[] { "ab", "AbC", "abcd", "abcde", "é1", "1-2", "\U0001F600x", "ß" })
+        {
+            var rule = Lit(literal);
+            foreach (var input in new[] { "", "a", "ab", "AB", "abc", "ABCD", "abcde", "ABCDE", "É1", "é1", "1-2", "\U0001F600x", "ss", "SS" })
+                foreach (var ignoreCase in new[] { false, true })
+                {
+                    var a = Parser.Parse(input, rule, partial: true, ignoreCase: ignoreCase);
+                    var b = Parser.Parse(input, rule.Compiled(), partial: true, ignoreCase: ignoreCase);
+                    Assert.True((a.Matched, a.Position) == (b.Matched, b.Position), $"'{literal}' on '{input}' ignoreCase={ignoreCase}");
+                }
+        }
+    }
+
+    [Fact]
+    public void The_edit_buffer_is_pooled_without_leaking_text_between_parses()
+    {
+        var rule = Dialect.Read("any [remove some digit | change \"x\" \"<>\" | skip]");
+        var compiled = rule.Compiled();
+        var rng = new Random(7);
+        foreach (var length in new[] { 0, 1, 15, 16, 17, 100, 5000, 70_000, 1_200_000, 30, 3 })
+        {
+            var input = new string(Enumerable.Range(0, length).Select(_ => "ab12x"[rng.Next(5)]).ToArray());
+            Assert.Equal(Parser.Parse(input, rule).Output, Parser.Parse(input, compiled).Output);
+        }
+        // a buffered rule under IsMatch rents and returns a buffer too, then refuses to edit
+        var strip = Dialect.Read("any [remove digit | skip]").Compiled();
+        foreach (var length in new[] { 5, 500, 50 })
+            Assert.Throws<InvalidOperationException>(() => Parser.IsMatch(new string('1', length), strip));
+        Assert.True(Parser.IsMatch("abc", strip));
     }
 }

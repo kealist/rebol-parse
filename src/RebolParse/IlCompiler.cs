@@ -93,16 +93,19 @@ internal sealed class IlNode : Node
 /// <summary>Where a compiled rule calls another by name. Looks the target up once per rule table.</summary>
 internal sealed class RefSite(string name)
 {
-    private sealed class Bound(IReadOnlyDictionary<string, Rule> rules, Node target)
+    /// <summary>What a name means in one rule table, including the generated code to run for it once that is known.</summary>
+    public sealed class Bound(IReadOnlyDictionary<string, Rule> rules, Node target)
     {
         public readonly IReadOnlyDictionary<string, Rule> Rules = rules;
         public readonly Node Target = target;
+        public IlFn? StringFn;   // for code that reads the original string
+        public IlFn? BufferFn;   // for code that reads the edit buffer
     }
 
     private Bound? bound;
     public string Name => name;
 
-    public Node Target(TextEngine e)
+    public Bound Resolve(TextEngine e)
     {
         var rules = e.Ctx.Rules;
         var b = bound;
@@ -111,8 +114,9 @@ internal sealed class RefSite(string name)
             if (!rules.TryGetValue(name, out var rule)) throw new KeyNotFoundException($"Undefined rule '{name}'.");
             bound = b = new Bound(rules, Compiler.Get(rule));
         }
-        return b.Target;
+        return b;
     }
+
 }
 
 /// <summary>Helpers the generated code calls for anything that is not a plain comparison.</summary>
@@ -276,17 +280,22 @@ internal static class IlRuntime
     /// <summary>Run the rule named at a <see cref="RefSite"/> from code that reads the original string.</summary>
     public static int Call(RefSite site, string text, int pos, TextEngine e)
     {
-        var target = site.Target(e);
+        var bound = site.Resolve(e);
         int end;
-        if (target is IlNode il)
+        if (bound.Target is IlNode il)
         {
-            if (il.Buffered) throw new InvalidOperationException(string.Format(EditsMessage, site.Name));
-            end = il.Pick(e, buffered: false)(text, pos, e);
+            var fn = bound.StringFn;
+            if (fn == null)
+            {
+                if (il.Buffered) throw new InvalidOperationException(string.Format(EditsMessage, site.Name));
+                bound.StringFn = fn = il.Pick(e, buffered: false);
+            }
+            end = fn(text, pos, e);
         }
         else
         {
             var span = text.AsSpan();
-            end = target.Match(e, ref span, ref pos) ? pos : -1;
+            end = bound.Target.Match(e, ref span, ref pos) ? pos : -1;
         }
         if (e.Edited) throw new InvalidOperationException(string.Format(EditsMessage, site.Name));
         return end;
@@ -295,10 +304,10 @@ internal static class IlRuntime
     /// <summary>Run the rule named at a <see cref="RefSite"/> from code that reads the edit buffer; the target may edit it.</summary>
     public static int CallBuf(RefSite site, int pos, TextEngine e)
     {
-        var target = site.Target(e);
-        if (target is IlNode il) return il.Pick(e, buffered: true)(e.Original, pos, e);
+        var bound = site.Resolve(e);
+        if (bound.Target is IlNode il) return (bound.BufferFn ??= il.Pick(e, buffered: true))(e.Original, pos, e);
         var span = e.CurrentText();
-        return target.Match(e, ref span, ref pos) ? pos : -1;
+        return bound.Target.Match(e, ref span, ref pos) ? pos : -1;
     }
 }
 
@@ -445,15 +454,6 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
 
     private static Rule Unwrap(Rule rule) => rule is CompiledRule c ? Unwrap(c.Body) : rule;
 
-    /// <summary>A call to a character test: direct when the delegate points at an ordinary method, through the delegate otherwise.</summary>
-    private static Expression CharTest(Func<char, bool> test, Expression ch)
-    {
-        var method = test.Method;
-        if (method.IsPublic && method.IsStatic == (test.Target is null))
-            return method.IsStatic ? Expression.Call(method, ch) : Expression.Call(Expression.Constant(test.Target), method, ch);
-        return Expression.Invoke(Expression.Constant(test), ch);
-    }
-
     /// <summary>
     /// Emits code for one rule. On success the code leaves the new position in <c>pos</c> and falls through; on failure
     /// it jumps to <c>fail</c> with <c>pos</c> in an unspecified state, so whoever backtracks restores it.
@@ -478,7 +478,8 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             var code = Emit(rule, pos, fail);
             var body = Expression.Block(
                 typeof(int),
-                [len, ic, buf, off, .. locals],
+                [len, ic, buf, off, .. locals, .. hoisted.Values, .. hoistedText.Values],
+                Expression.Block(typeof(void), Prologue().DefaultIfEmpty(Expression.Empty())),
                 Expression.Assign(pos, start),
                 buffered ? Reload() : Expression.Assign(len, Expression.Property(text, nameof(string.Length))),
                 Expression.Assign(ic, Expression.Field(e, nameof(TextEngine.IgnoreCase))),
@@ -498,6 +499,35 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
         }
 
         private static Expression Int(int n) => Expression.Constant(n);
+
+        // Constants other than numbers are loaded from the delegate's closure each time they are used. Each is loaded once
+        // into a local at the start instead, and used from there.
+        private readonly Dictionary<object, ParameterExpression> hoisted = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<string, ParameterExpression> hoistedText = [];
+
+        private Expression K<T>(T value) where T : class
+        {
+            if (value is string str)
+            {
+                if (!hoistedText.TryGetValue(str, out var local)) hoistedText[str] = local = Expression.Variable(typeof(string), "k" + counter++);
+                return local;
+            }
+            if (!hoisted.TryGetValue(value, out var v)) hoisted[value] = v = Expression.Variable(value.GetType(), "k" + counter++);
+            return v;
+        }
+
+        private IEnumerable<Expression> Prologue() =>
+            hoisted.Select(kv => (Expression)Expression.Assign(kv.Value, Expression.Constant(kv.Key, kv.Value.Type)))
+                .Concat(hoistedText.Select(kv => (Expression)Expression.Assign(kv.Value, Expression.Constant(kv.Key))));
+
+        /// <summary>A call to a character test: direct when the delegate points at an ordinary method, through the delegate otherwise.</summary>
+        private Expression CharTest(Func<char, bool> test, Expression ch)
+        {
+            var method = test.Method;
+            if (method.IsPublic && method.IsStatic == (test.Target is null))
+                return method.IsStatic ? Expression.Call(method, ch) : Expression.Call(K(test.Target!), method, ch);
+            return Expression.Invoke(K(test), ch);
+        }
         private static Expression Fail(LabelTarget fail) => Expression.Goto(fail);
         private Expression CharAtPos(Expression pos) =>
             buffered ? Expression.ArrayIndex(buf, Expression.Add(off, pos)) : Expression.Call(text, CharAt, pos);
@@ -526,12 +556,13 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                 case Lit { Value: char c }: return EmitChar(c, pos, fail);
                 case Lit { Value: string { Length: 0 } }: return Expression.Empty();
                 case Lit { Value: string { Length: 1 } one } when !HasCase(one[0]): return EmitChar(one[0], pos, fail);
+                case Lit { Value: string { Length: <= 4 } few } when !few.Any(char.IsSurrogate): return EmitChars(few, pos, fail);
                 case Lit { Value: string s }:
                     return Expression.Block(
                         Expression.IfThen(
                             Expression.Not(buffered
-                                ? Expression.Call(Runtime(nameof(IlRuntime.StartsWithBuf)), buf, off, len, pos, Expression.Constant(s), ic)
-                                : Expression.Call(Runtime(nameof(IlRuntime.StartsWith)), text, pos, Expression.Constant(s), ic)),
+                                ? Expression.Call(Runtime(nameof(IlRuntime.StartsWithBuf)), buf, off, len, pos, K(s), ic)
+                                : Expression.Call(Runtime(nameof(IlRuntime.StartsWith)), text, pos, K(s), ic)),
                             Fail(fail)),
                         Advance(pos, Int(s.Length)));
                 case Lit or FailRule or Into: return Fail(fail);   // numbers and words never occur in text; text has no nested blocks
@@ -581,7 +612,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                         Expression.Assign(list, Expression.Call(Runtime(nameof(IlRuntime.CollectBegin)), e)),
                         Emit(c.Body, pos, failed),
                         Expression.Call(Runtime(nameof(IlRuntime.CollectEnd)), e),
-                        Expression.Call(Runtime(nameof(IlRuntime.StoreList)), e, Expression.Constant(c.Var), list),
+                        Expression.Call(Runtime(nameof(IlRuntime.StoreList)), e, K(c.Var), list),
                         Expression.Goto(done),
                         Expression.Label(failed),
                         Expression.Call(Runtime(nameof(IlRuntime.CollectEnd)), e),
@@ -595,7 +626,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                     var target = Local<List<object>>("keep");
                     return Expression.Block(
                         Expression.Assign(target, Expression.Call(Runtime(nameof(IlRuntime.KeepTarget)), e)),
-                        Expression.Call(Runtime(nameof(IlRuntime.KeepValue)), e, Expression.Constant(k.Value), target, pos));
+                        Expression.Call(Runtime(nameof(IlRuntime.KeepValue)), e, K(k.Value), target, pos));
                 }
                 case To t: return EmitScan(t.Body, thru: false, pos, fail);
                 case Thru t: return EmitScan(t.Body, thru: true, pos, fail);
@@ -607,8 +638,8 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                         Emit(c.Body, pos, fail),
                         SettleAt(from),
                         buffered
-                            ? Expression.Call(Runtime(nameof(IlRuntime.CopyBuf)), e, Expression.Constant(c.Var), buf, off, from, pos)
-                            : Expression.Call(Runtime(nameof(IlRuntime.Copy)), e, Expression.Constant(c.Var), text, from, pos));
+                            ? Expression.Call(Runtime(nameof(IlRuntime.CopyBuf)), e, K(c.Var), buf, off, from, pos)
+                            : Expression.Call(Runtime(nameof(IlRuntime.Copy)), e, K(c.Var), text, from, pos));
                 }
                 case Set s:
                 {
@@ -618,12 +649,12 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                         Emit(s.Body, pos, fail),
                         SettleAt(from),
                         buffered
-                            ? Expression.Call(Runtime(nameof(IlRuntime.SetBuf)), e, Expression.Constant(s.Var), buf, off, from, pos)
-                            : Expression.Call(Runtime(nameof(IlRuntime.Set)), e, Expression.Constant(s.Var), text, from, pos));
+                            ? Expression.Call(Runtime(nameof(IlRuntime.SetBuf)), e, K(s.Var), buf, off, from, pos)
+                            : Expression.Call(Runtime(nameof(IlRuntime.Set)), e, K(s.Var), text, from, pos));
                 }
                 case Insert i:
                     return Expression.Block(
-                        Expression.AddAssign(pos, Expression.Call(Runtime(nameof(IlRuntime.InsertValue)), e, Expression.Constant(i.Value), pos)),
+                        Expression.AddAssign(pos, Expression.Call(Runtime(nameof(IlRuntime.InsertValue)), e, K(i.Value), pos)),
                         Reload());
                 case Remove r:
                 {
@@ -642,28 +673,28 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                         Expression.Assign(from, pos),
                         Emit(c.Body, pos, fail),
                         Expression.Call(Runtime(nameof(IlRuntime.RemoveAt)), e, from, pos),
-                        Expression.Assign(pos, Expression.Add(from, Expression.Call(Runtime(nameof(IlRuntime.InsertValue)), e, Expression.Constant(c.Value), from))),
+                        Expression.Assign(pos, Expression.Add(from, Expression.Call(Runtime(nameof(IlRuntime.InsertValue)), e, K(c.Value), from))),
                         Reload());
                 }
                 case Ref r when buffered:
                     // the rule called may edit the text, so the buffer and the length are read again afterwards
                     return Expression.Block(
-                        Expression.Assign(pos, Expression.Call(Runtime(nameof(IlRuntime.CallBuf)), Expression.Constant(new RefSite(r.Name)), pos, e)),
+                        Expression.Assign(pos, Expression.Call(Runtime(nameof(IlRuntime.CallBuf)), K(new RefSite(r.Name)), pos, e)),
                         Reload(),
                         Expression.IfThen(Expression.LessThan(pos, Int(0)), Fail(fail)));   // a rule that rewinds settles the text itself
                 case Ref r:
                     return Expression.Block(
-                        Expression.Assign(pos, Expression.Call(Runtime(nameof(IlRuntime.Call)), Expression.Constant(new RefSite(r.Name)), text, pos, e)),
+                        Expression.Assign(pos, Expression.Call(Runtime(nameof(IlRuntime.Call)), K(new RefSite(r.Name)), text, pos, e)),
                         Expression.IfThen(Expression.LessThan(pos, Int(0)), Fail(fail)));
-                case Mark m: return Expression.Call(Runtime(nameof(IlRuntime.Mark)), e, Expression.Constant(m.Name), pos);
+                case Mark m: return Expression.Call(Runtime(nameof(IlRuntime.Mark)), e, K(m.Name), pos);
                 case Seek s:
                     return Expression.Block(
-                        Expression.Assign(pos, Expression.Call(Runtime(nameof(IlRuntime.Seek)), e, Expression.Constant(s.Name))),
+                        Expression.Assign(pos, Expression.Call(Runtime(nameof(IlRuntime.Seek)), e, K(s.Name))),
                         SettleAt(pos));
-                case Act a: return Expression.Call(Runtime(nameof(IlRuntime.Act)), e, Expression.Constant(a.Run), pos);
+                case Act a: return Expression.Call(Runtime(nameof(IlRuntime.Act)), e, K(a.Run), pos);
                 default:   // Supports admits nothing else
                     return Expression.IfThen(
-                        Expression.Not(Expression.Call(Runtime(nameof(IlRuntime.If)), e, Expression.Constant(((If)rule).Condition), pos)),
+                        Expression.Not(Expression.Call(Runtime(nameof(IlRuntime.If)), e, K(((If)rule).Condition), pos)),
                         Fail(fail));
             }
         }
@@ -688,16 +719,28 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
         // ASCII digits and punctuation have no other-case spelling, so they need no ignore-case comparison
         private static bool HasCase(char c) => c >= 128 || char.IsAsciiLetter(c);
 
-        private Expression EmitChar(char c, ParameterExpression pos, LabelTarget fail)
+        // does the character at `at` equal c, ignoring case when asked to? (the caller has checked it is in range)
+        private Expression CharIs(char c, Expression at)
         {
-            var ch = CharAtPos(pos);
-            Expression same = Expression.Equal(ch, Expression.Constant(c));
+            Expression same = Expression.Equal(CharAtPos(at), Expression.Constant(c));
             if (HasCase(c))
                 same = Expression.OrElse(same, Expression.AndAlso(ic,
-                    Expression.Equal(Expression.Call(ToUpper, CharAtPos(pos)), Expression.Constant(char.ToUpperInvariant(c)))));
-            return Expression.Block(
-                Expression.IfThen(Expression.Not(Expression.AndAlso(Expression.LessThan(pos, len), same)), Fail(fail)),
+                    Expression.Equal(Expression.Call(ToUpper, CharAtPos(at)), Expression.Constant(char.ToUpperInvariant(c)))));
+            return same;
+        }
+
+        private Expression EmitChar(char c, ParameterExpression pos, LabelTarget fail) =>
+            Expression.Block(
+                Expression.IfThen(Expression.Not(Expression.AndAlso(Expression.LessThan(pos, len), CharIs(c, pos))), Fail(fail)),
                 Expression.PreIncrementAssign(pos));
+
+        // a short literal is a few character compares, with no call
+        private Expression EmitChars(string s, ParameterExpression pos, LabelTarget fail)
+        {
+            Expression all = Expression.LessThanOrEqual(Expression.Add(pos, Int(s.Length)), len);
+            for (var i = 0; i < s.Length; i++)
+                all = Expression.AndAlso(all, CharIs(s[i], i == 0 ? pos : Expression.Add(pos, Int(i))));
+            return Expression.Block(Expression.IfThen(Expression.Not(all), Fail(fail)), Advance(pos, Int(s.Length)));
         }
 
         private Expression EmitItem(Item item, ParameterExpression pos, LabelTarget fail)
@@ -705,7 +748,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             var ch = CharAtPos(pos);
             var matches = item.CharTest is { } test
                 ? CharTest(test, ch)
-                : Expression.Invoke(Expression.Constant(item.Test), Expression.Convert(ch, typeof(object)));
+                : Expression.Invoke(K(item.Test), Expression.Convert(ch, typeof(object)));
             return Expression.Block(
                 Expression.IfThen(Expression.Not(Expression.AndAlso(Expression.LessThan(pos, len), matches)), Fail(fail)),
                 Expression.PreIncrementAssign(pos));
@@ -872,8 +915,8 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                     var at = Local<int>("scanAt");
                     return Expression.Block(
                         Expression.Assign(at, buffered
-                            ? Expression.Call(Runtime(nameof(IlRuntime.IndexOfBuf)), buf, off, len, pos, Expression.Constant(s), ic)
-                            : Expression.Call(Runtime(nameof(IlRuntime.IndexOf)), text, pos, Expression.Constant(s), ic)),
+                            ? Expression.Call(Runtime(nameof(IlRuntime.IndexOfBuf)), buf, off, len, pos, K(s), ic)
+                            : Expression.Call(Runtime(nameof(IlRuntime.IndexOf)), text, pos, K(s), ic)),
                         Expression.IfThen(Expression.LessThan(at, Int(0)), Fail(fail)),
                         Advance(pos, thru ? Expression.Add(at, Int(s.Length)) : at));
                 }

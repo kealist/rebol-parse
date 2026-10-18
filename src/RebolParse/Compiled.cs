@@ -46,6 +46,9 @@ internal sealed class TextEngine
     {
         original = "";
         Ctx = null!;
+        if (buffer != null) System.Buffers.ArrayPool<char>.Shared.Return(buffer);   // edited text is copied out by Result first
+        buffer = null;
+        bufferHolds = false;
     }
 
     /// <summary>The text after the parse: the original string when nothing was edited.</summary>
@@ -107,8 +110,8 @@ internal sealed class TextEngine
     public void EnsureBuffer(ReadOnlySpan<char> text)
     {
         if (bufferHolds) return;
-        var needed = Math.Max(text.Length, 64) * 2;
-        if (buffer == null || buffer.Length < needed) buffer = new char[needed];
+        // Clear gives the buffer back at the end of every parse, so there is none to reuse here
+        buffer = System.Buffers.ArrayPool<char>.Shared.Rent(Math.Max(text.Length, 16));   // a rented array is not zeroed
         text.CopyTo(buffer);
         length = text.Length;
         gapStart = gapSize = 0;
@@ -131,10 +134,11 @@ internal sealed class TextEngine
     {
         if (gapSize >= needed) return;
         var extra = Math.Max(needed - gapSize, length);
-        var grown = new char[length + extra];
+        var grown = System.Buffers.ArrayPool<char>.Shared.Rent(length + extra);
         var tail = gapStart + gapSize;
         Array.Copy(buffer!, 0, grown, 0, gapStart);
         Array.Copy(buffer!, tail, grown, tail + extra, length - tail);
+        System.Buffers.ArrayPool<char>.Shared.Return(buffer!);
         buffer = grown;
         gapSize += extra;
         length += extra;
