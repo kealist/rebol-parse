@@ -37,10 +37,10 @@ public sealed class LogDemo : IDemo
             copy level some upper some space
             "[" copy comp some [not "]" skip] "]" some space
             copy msg to end (@entry)
-            """, lineActions);
+            """, lineActions).Compiled();
         pairs = Dialect.Read("""
             any [copy k [alpha any [alnum | "_"]] "=" copy v some [not space skip] (@kv) | skip]
-            """, new Dictionary<string, Action<Ctx>> { ["kv"] = c => found[(string)c.Vars["k"]!] = (string)c.Vars["v"]! });
+            """, new Dictionary<string, Action<Ctx>> { ["kv"] = c => found[(string)c.Vars["k"]!] = (string)c.Vars["v"]! }).Compiled();
     }
 
     public (List<Entry> Entries, int Skipped) Read(string log)

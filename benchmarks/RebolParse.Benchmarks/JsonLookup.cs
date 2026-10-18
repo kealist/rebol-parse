@@ -39,7 +39,8 @@ public class JsonLookup
         number = opt "-" ["0" | some digit] opt ["." some digit] opt [charset "eE" opt charset "+-" some digit]
         """);
 
-    private readonly JsonDemo reader = new();
+    private readonly JsonDemo reader = new(compiled: false);
+    private readonly JsonDemo readerIl = new(compiled: true);
     private string json = "";
     private byte[] utf8 = [];
     private string[] paths = [];
@@ -51,8 +52,9 @@ public class JsonLookup
     /// <summary>
     /// Small is a 400-byte document. Large is 2,000 records, about 150 KB, read at the start, middle and end.
     /// LargeEarly is the same document but reads only properties near the start, where stopping early pays.
+    /// Huge and HugeEarly are the same shapes with 200,000 records, about 11 MB.
     /// </summary>
-    [Params("Small", "Large", "LargeEarly")] public string Size = "Small";
+    [Params("Small", "Large", "LargeEarly", "Huge", "HugeEarly")] public string Size = "Small";
 
     [GlobalSetup]
     public void Setup()
@@ -64,9 +66,11 @@ public class JsonLookup
         }
         else
         {
-            json = "[" + string.Join(",", Enumerable.Range(0, 2000).Select(i =>
+            var records = Size.StartsWith("Huge") ? 200_000 : 2000;
+            json = "[" + string.Join(",", Enumerable.Range(0, records).Select(i =>
                 $"{{\"id\":{i},\"name\":\"item {i}\",\"tags\":[\"a\",\"b\"],\"ok\":{(i % 2 == 0 ? "true" : "false")}}}")) + "]";
-            paths = Size == "Large" ? ["[0].name", "[1000].tags[1]", "[1999].id"] : ["[0].name", "[1].tags[1]", "[2].id"];
+            paths = Size.EndsWith("Early") ? ["[0].name", "[1].tags[1]", "[2].id"]
+                : [$"[0].name", $"[{records / 2}].tags[1]", $"[{records - 1}].id"];
         }
         utf8 = Encoding.UTF8.GetBytes(json);
         steps = paths.Select(ParsePath).ToArray();
@@ -77,6 +81,7 @@ public class JsonLookup
         Guard.Same("JsonDocument bytes", JsonDocumentBytes(), expected);
         Guard.Same("JsonNode", JsonNodeTree(), expected);
         Guard.Same("RebolParse tree", RebolParseTree(), expected);
+        Guard.Same("RebolParse tree IL", RebolParseTreeIl(), expected);
         Guard.Same("RebolParse targeted", RebolParseTargeted(), expected);
         Guard.Same("RebolParse targeted IL", RebolParseTargetedIl(), expected);
     }
@@ -157,9 +162,14 @@ public class JsonLookup
     }
 
     [Benchmark(Description = "RebolParse: read the whole document, then look up")]
-    public string RebolParseTree()
+    public string RebolParseTree() => Lookup(reader);
+
+    [Benchmark(Description = "RebolParse compiled to IL: read the whole document, then look up")]
+    public string RebolParseTreeIl() => Lookup(readerIl);
+
+    private string Lookup(JsonDemo demo)
     {
-        var root = reader.Read(json);
+        var root = demo.Read(json);
         var sb = new StringBuilder();
         foreach (var path in steps)
         {

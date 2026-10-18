@@ -21,7 +21,7 @@ public sealed class SourceCleaner : IDemo
           | remove ["/*" thru "*/"]                        ; block comment
           | skip
         ]
-        """);
+        """).Compiled();
 
     private static readonly Rule Tidy = Dialect.Read("""
         any [
@@ -29,7 +29,7 @@ public sealed class SourceCleaner : IDemo
           | change ["^/" "^/" some "^/"] "^/^/"            ; three or more newlines become one blank line
           | skip
         ]
-        """);
+        """).Compiled();
 
     public static string Clean(string source)
     {

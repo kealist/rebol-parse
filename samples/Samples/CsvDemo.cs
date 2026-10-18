@@ -31,7 +31,7 @@ public sealed class CsvDemo : IDemo
             field  = quoted | plain
             quoted = "^"" copy f any [not "^"" skip | "^"" "^""] "^"" (@quoted)
             plain  = copy f any [not ["," | "^"" | "^/"] skip] (@plain)
-            """, actions);
+            """, actions).Compiled();
     }
 
     public List<List<string>> Read(string csv)

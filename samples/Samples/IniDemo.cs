@@ -58,7 +58,7 @@ public sealed class IniDemo : IDemo
             section = "[" ws copy name some [not [ws "]"] skip] ws "]" (@section)
             pair    = copy key some [not [ws "="] skip] ws "=" ws
                       ["^"" copy val to "^"" "^"" | copy val any [not [ws end] skip]] (@pair)
-            """, actions);
+            """, actions).Compiled();
     }
 
     public Ini Read(string text)

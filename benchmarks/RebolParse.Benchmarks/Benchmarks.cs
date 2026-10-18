@@ -75,8 +75,11 @@ public class KeyValueLines
     private string input = "";
     private readonly Rule rule = Dialect.Read(
         "collect out any [keep some [not [\"=\" | newline] skip] \"=\" keep any [not newline skip] opt newline]");
+    private readonly Rule il;
     private readonly Regex interpreted = new("([^=\n]+)=([^\n]*)");
     private readonly Regex compiled = new("([^=\n]+)=([^\n]*)", RegexOptions.Compiled);
+
+    public KeyValueLines() => il = rule.Compiled();
 
     [Params(10, 1_000)] public int Lines;
 
@@ -85,11 +88,16 @@ public class KeyValueLines
     {
         input = string.Join("\n", Enumerable.Range(0, Lines).Select(i => $"key{i}=value number {i}"));
         Guard.Same("kv", ParseCount(), RegexCount(compiled));
+        Guard.Same("kv il", IlParseCount(), RegexCount(compiled));
     }
 
     [Benchmark(Baseline = true)]
     public int ParseCount() =>
         ((IReadOnlyList<object>)Parser.Parse(input, rule).Vars["out"]!).Count / 2;
+
+    [Benchmark]
+    public int IlParseCount() =>
+        ((IReadOnlyList<object>)Parser.Parse(input, il).Vars["out"]!).Count / 2;
 
     private int RegexCount(Regex r) => r.Matches(input).Count;
     [Benchmark] public int RegexInterpreted() => RegexCount(interpreted);
@@ -102,8 +110,11 @@ public class ExtractWords
 {
     private string input = "";
     private readonly Rule rule = Dialect.Read("collect w any [keep some alpha | skip]");
+    private readonly Rule il;
     private readonly Regex interpreted = new("[A-Za-z]+");
     private readonly Regex compiled = new("[A-Za-z]+", RegexOptions.Compiled);
+
+    public ExtractWords() => il = rule.Compiled();
 
     [Params(1_000, 100_000)] public int Chars;
 
@@ -115,10 +126,12 @@ public class ExtractWords
         for (var i = 0; sb.Length < Chars; i++) sb.Append(words[i % words.Length]).Append(' ');
         input = sb.ToString();
         Guard.Same("words", ParseCount(), compiled.Matches(input).Count);
+        Guard.Same("words il", IlParseCount(), compiled.Matches(input).Count);
     }
 
     [Benchmark(Baseline = true)]
     public int ParseCount() => ((IReadOnlyList<object>)Parser.Parse(input, rule, partial: true).Vars["w"]!).Count;
+    [Benchmark] public int IlParseCount() => ((IReadOnlyList<object>)Parser.Parse(input, il, partial: true).Vars["w"]!).Count;
     [Benchmark] public int RegexInterpreted() => interpreted.Matches(input).Count;
     [Benchmark] public int RegexCompiled() => compiled.Matches(input).Count;
 }
@@ -129,6 +142,7 @@ public class StripDigits
 {
     private string input = "";
     private readonly Rule rule = Dialect.Read("any [remove some digit | skip]");
+    private readonly Rule il = Dialect.Read("any [remove some digit | skip]").Compiled();
     private readonly Regex interpreted = new("[0-9]+");
     private readonly Regex compiled = new("[0-9]+", RegexOptions.Compiled);
 
@@ -141,9 +155,11 @@ public class StripDigits
         for (var i = 0; sb.Length < Chars; i++) sb.Append("item").Append(i).Append(' ');
         input = sb.ToString();
         Guard.Same("strip", (string)Parser.Parse(input, rule).Output!, compiled.Replace(input, ""));
+        Guard.Same("strip il", (string)IlParse()!, compiled.Replace(input, ""));
     }
 
     [Benchmark(Baseline = true)] public object? Parse() => Parser.Parse(input, rule).Output;
+    [Benchmark] public object? IlParse() => Parser.Parse(input, il).Output;
     [Benchmark] public string RegexInterpreted() => interpreted.Replace(input, "");
     [Benchmark] public string RegexCompiled() => compiled.Replace(input, "");
 }

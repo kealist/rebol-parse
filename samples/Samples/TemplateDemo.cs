@@ -31,11 +31,11 @@ public sealed class TemplateDemo : IDemo
         {
             ["reset"] = _ => filters.Clear(),
             ["filter"] = c => filters.Add((string)c.Vars["f"]!),
-        });
+        }).Compiled();
         render = Any(Choice(
             Change((Rule)"\\{{", "{{"),            // \{{ writes a literal {{
             Change(Ref("tag"), Resolve),
-            Skip));
+            Skip)).Compiled();
     }
 
     private object? Lookup(string path)

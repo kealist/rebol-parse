@@ -19,7 +19,8 @@ public sealed class JsonDemo : IDemo
     private readonly List<object?> stack = [];
     private readonly Dictionary<string, Rule> rules;
 
-    public JsonDemo()
+    /// <param name="compiled">Compile the grammar to IL (the default). Pass false to run it on the interpreter, for comparison.</param>
+    public JsonDemo(bool compiled = true)
     {
         var actions = new Dictionary<string, Action<Ctx>>
         {
@@ -38,7 +39,7 @@ public sealed class JsonDemo : IDemo
                 stack.Add(o);
             },
         };
-        rules = Dialect.ReadGrammar("""
+        var grammar = Dialect.ReadGrammar("""
             json   = ws value ws end
             ws     = any space
             value  = object | array | string | number
@@ -49,7 +50,8 @@ public sealed class JsonDemo : IDemo
             string = "^"" copy s any [some [not ["^"" | "\"] skip] | "\" skip] "^"" (@string)
             number = copy n [opt "-" ["0" | some digit] opt ["." some digit]
                              opt [charset "eE" opt charset "+-" some digit]] (@number)
-            """, actions).Compiled();
+            """, actions);
+        rules = compiled ? grammar.Compiled() : grammar;
     }
 
     private List<object?> TakeItems()
