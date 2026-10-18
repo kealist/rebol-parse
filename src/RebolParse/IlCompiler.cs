@@ -27,38 +27,63 @@ internal delegate int IlFn(string text, int pos, TextEngine e);
 internal sealed class IlNode : Node
 {
     private readonly Rule rule;
-    private IlFn? bufferedFn;
+    private readonly string[] refs;   // the rules this rule calls
+    private readonly IlFn?[] variants = new IlFn?[4];   // by (reads the edit buffer, calls only rules with no side effects)
 
-    /// <summary>The generated code. For a buffered rule it reads the engine's edit buffer; otherwise the string.</summary>
-    public readonly IlFn Fn;
+    private sealed class Calls(IReadOnlyDictionary<string, Rule> rules, bool effectFree)
+    {
+        public readonly IReadOnlyDictionary<string, Rule> Rules = rules;
+        public readonly bool EffectFree = effectFree;
+    }
 
-    /// <summary>True when <see cref="Fn"/> reads the engine's edit buffer, which is the case for any rule that edits.</summary>
+    private Calls? calls;
+
+    /// <summary>True when this rule always reads the engine's edit buffer, which is the case for any rule that edits.</summary>
     public readonly bool Buffered;
 
     // pure when nothing in the rule breaks, keeps, edits or refers to other rules, as with the interpreter's nodes
-    public IlNode(Rule rule, IlFn fn, bool pure, bool buffered)
+    public IlNode(Rule rule, IlFn fn, bool pure, bool buffered, string[] refs)
     {
         this.rule = rule;
-        Fn = fn;
+        this.refs = refs;
         Pure = pure;
         Buffered = buffered;
+        variants[buffered ? 2 : 0] = fn;
     }
 
-    /// <summary>A version that reads the edit buffer, made the first time it is needed (a rule that runs after the text was edited).</summary>
-    public IlFn BufferedFn => Buffered ? Fn : bufferedFn ??= IlCompiler.CompileBuffered(rule);
+    /// <summary>
+    /// The generated code to run. It reads the string or the edit buffer, and when every rule this one calls is free of
+    /// side effects (no break, keep or edit anywhere beneath it) it skips the bookkeeping those would need. Variants
+    /// are made the first time they are asked for.
+    /// </summary>
+    public IlFn Pick(TextEngine e, bool buffered)
+    {
+        buffered |= Buffered;
+        var free = refs.Length > 0 && CallsAreEffectFree(e);
+        var i = (buffered ? 2 : 0) + (free ? 1 : 0);
+        return variants[i] ??= IlCompiler.Compile(rule, buffered, free);
+    }
+
+    private bool CallsAreEffectFree(TextEngine e)
+    {
+        var rules = e.Ctx.Rules;
+        var c = calls;
+        if (c == null || !ReferenceEquals(c.Rules, rules)) calls = c = new Calls(rules, IlCompiler.EffectFree(rules, refs));
+        return c.EffectFree;
+    }
 
     public override bool Match(TextEngine e, ref ReadOnlySpan<char> text, ref int pos)
     {
         if (Buffered || e.Edited)
         {
             e.EnsureBuffer(text);
-            var done = BufferedFn(e.Original, pos, e);
+            var done = Pick(e, buffered: true)(e.Original, pos, e);
             text = e.CurrentText();   // the rule may have edited it
             if (done < 0) return false;
             pos = done;
             return true;
         }
-        var end = Fn(e.Original, pos, e);
+        var end = Pick(e, buffered: false)(e.Original, pos, e);
         if (end < 0) return false;
         pos = end;
         return true;
@@ -256,7 +281,7 @@ internal static class IlRuntime
         if (target is IlNode il)
         {
             if (il.Buffered) throw new InvalidOperationException(string.Format(EditsMessage, site.Name));
-            end = il.Fn(text, pos, e);
+            end = il.Pick(e, buffered: false)(text, pos, e);
         }
         else
         {
@@ -271,7 +296,7 @@ internal static class IlRuntime
     public static int CallBuf(RefSite site, int pos, TextEngine e)
     {
         var target = site.Target(e);
-        if (target is IlNode il) return il.BufferedFn(e.Original, pos, e);
+        if (target is IlNode il) return il.Pick(e, buffered: true)(e.Original, pos, e);
         var span = e.CurrentText();
         return target.Match(e, ref span, ref pos) ? pos : -1;
     }
@@ -291,11 +316,46 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
         if (!Supports(rule)) return null;
         // a rule that edits reads the engine's buffer, since the string no longer matches the text after an edit
         buffered |= Parts(rule).Any(r => r is Insert or Change or Remove);
-        return new IlNode(rule, new Gen(buffered).Build(rule), IsPure(rule), buffered);
+        var refs = Parts(rule).OfType<Ref>().Select(r => r.Name).Distinct().ToArray();
+        return new IlNode(rule, Compile(rule, buffered, refsEffectFree: false), IsPure(rule, false), buffered, refs);
     }
 
-    /// <summary>Generate the buffer-reading version of a rule that otherwise reads the string.</summary>
-    public static IlFn CompileBuffered(Rule rule) => new Gen(buffered: true).Build(rule);
+    /// <summary>Generate code for a rule. <paramref name="refsEffectFree"/> says the rules it calls never break, keep or edit.</summary>
+    public static IlFn Compile(Rule rule, bool buffered, bool refsEffectFree) => new Gen(buffered, refsEffectFree).Build(rule);
+
+    private static bool IsEffect(Rule rule) =>
+        rule is BreakRule or RejectRule or Keep or KeepPick or KeepValue or Insert or Change or Remove;
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IReadOnlyDictionary<string, Rule>, HashSet<string>> EffectfulRules = new();
+
+    /// <summary>True when none of the named rules, nor any rule they call, can break, reject, keep or edit.</summary>
+    public static bool EffectFree(IReadOnlyDictionary<string, Rule> rules, string[] names)
+    {
+        var effectful = EffectfulRules.GetValue(rules, table =>
+        {
+            var found = new HashSet<string>();
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (var (name, body) in table)
+                    if (!found.Contains(name) && Parts(body).Any(r => IsEffect(r) || (r is Ref call && found.Contains(call.Name))))
+                    {
+                        found.Add(name);
+                        changed = true;
+                    }
+            }
+            return found;
+        });
+        return names.All(name => !effectful.Contains(name));
+    }
+
+    /// <summary>True when <paramref name="rule"/> calls, through any depth of calls, a rule in the table that edits.</summary>
+    public static bool CallsEditingRule(Rule rule, IReadOnlyDictionary<string, Rule> rules)
+    {
+        var editing = RulesReachingEdits(rules);
+        return Parts(rule).Any(r => r is Ref call && editing.Contains(call.Name));
+    }
 
     /// <summary>The names of the rules in the table that can reach an edit, through the rules they call.</summary>
     public static HashSet<string> RulesReachingEdits(IReadOnlyDictionary<string, Rule> rules)
@@ -365,20 +425,21 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
     };
 
     /// <summary>The interpreter's <c>Node.Pure</c> for the same rule: nothing in it breaks, rejects, keeps or refers to other rules.</summary>
-    private static bool IsPure(Rule rule) => rule switch
+    private static bool IsPure(Rule rule, bool refsFree) => rule switch
     {
-        BreakRule or RejectRule or Keep or KeepPick or KeepValue or Ref or Insert or Change or Remove => false,
-        Seq s => s.Items.All(IsPure),
-        Alt a => a.Items.All(IsPure),
-        Repeat r => IsPure(r.Body),
-        Ahead a => IsPure(a.Body),
-        Not n => IsPure(n.Body),
-        To t => IsPure(t.Body),
-        Thru t => IsPure(t.Body),
-        Copy c => IsPure(c.Body),
-        Set s => IsPure(s.Body),
-        Collect c => IsPure(c.Body),
-        CompiledRule c => IsPure(c.Body),
+        BreakRule or RejectRule or Keep or KeepPick or KeepValue or Insert or Change or Remove => false,
+        Ref => refsFree,   // the node engine always counts a call as impure; code that knows its targets are free can do better
+        Seq s => s.Items.All(i => IsPure(i, refsFree)),
+        Alt a => a.Items.All(i => IsPure(i, refsFree)),
+        Repeat r => IsPure(r.Body, refsFree),
+        Ahead a => IsPure(a.Body, refsFree),
+        Not n => IsPure(n.Body, refsFree),
+        To t => IsPure(t.Body, refsFree),
+        Thru t => IsPure(t.Body, refsFree),
+        Copy c => IsPure(c.Body, refsFree),
+        Set s => IsPure(s.Body, refsFree),
+        Collect c => IsPure(c.Body, refsFree),
+        CompiledRule c => IsPure(c.Body, refsFree),
         _ => true,
     };
 
@@ -397,7 +458,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
     /// Emits code for one rule. On success the code leaves the new position in <c>pos</c> and falls through; on failure
     /// it jumps to <c>fail</c> with <c>pos</c> in an unspecified state, so whoever backtracks restores it.
     /// </summary>
-    private sealed class Gen(bool buffered)
+    private sealed class Gen(bool buffered, bool refsEffectFree)
     {
         private readonly ParameterExpression text = Expression.Parameter(typeof(string), "text");
         private readonly ParameterExpression start = Expression.Parameter(typeof(int), "start");
@@ -495,7 +556,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                     var ok = Expression.Label("notOk");
                     var parts = new List<Expression> { Expression.Assign(saved, pos) };
                     ParameterExpression? snap = null;
-                    if (!IsPure(n.Body))
+                    if (!IsPure(n.Body, refsEffectFree))
                     {
                         snap = Local<long>("notSnap");
                         parts.Add(Expression.Assign(snap, Snap()));
@@ -660,7 +721,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             {
                 var item = alt.Items[i];
                 var last = i == alt.Items.Length - 1;
-                if (IsPure(item))
+                if (IsPure(item, refsEffectFree))
                 {
                     if (last)
                     {
@@ -716,7 +777,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                 return Expression.Block(typeof(void), parts);
             }
 
-            if (!IsPure(r.Body)) return EmitLoop(r, from, pos, fail);
+            if (!IsPure(r.Body, refsEffectFree)) return EmitLoop(r, from, pos, fail);
 
             var count = Local<int>("repCount");
             var before = Local<int>("repBefore");
@@ -852,7 +913,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             var top = Expression.Label("scanTop");
             var next = Expression.Label("scanNext");
             var done = Expression.Label("scanDone");
-            var impure = !IsPure(body);
+            var impure = !IsPure(body, refsEffectFree);
             var snap = impure ? Local<long>("scanSnap") : null;
             var parts = new List<Expression>
             {

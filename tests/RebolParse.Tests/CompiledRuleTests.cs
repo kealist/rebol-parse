@@ -11,6 +11,9 @@ public class CompiledRuleTests
         ["ab"] = Choice("a", "b"),
         ["word"] = Some(Alpha) + Opt("-" + Ref("word")),
         ["cs"] = Chars("a-c"),
+        ["kw"] = Keep(Some(Alpha)),               // rules with side effects: calls to these use the careful variant
+        ["brk"] = Seq(Alpha, Break),
+        ["ed"] = Remove(Digit),
     };
 
     // No bare inserts: an insert that is followed by a failure stays in the text, so a choice or loop around one can
@@ -29,7 +32,7 @@ public class CompiledRuleTests
                 6 => Skip,
                 7 => Digit,
                 8 => Alpha,
-                9 => Ref(new[] { "dig", "ab", "word", "cs" }[rng.Next(4)]),
+                9 => Ref(new[] { "dig", "ab", "word", "cs", "kw", "brk", "ed" }[rng.Next(7)]),
                 10 => Lit(""),
                 11 => Lit(7),
                 12 => Chars("a-b"),
@@ -88,7 +91,7 @@ public class CompiledRuleTests
         {
             var rule = Gen(rng, 4);
             if (rng.Next(4) == 0) rule = Seq(Mark("m"), rule, Seek("m"), Gen(rng, 2));
-            var compiled = rule.Compiled();
+            var compiled = rule.Compiled(Table);
             if (((CompiledRule)compiled).IsNative) native++;
             var len = rng.Next(0, 10);
             var input = new string(Enumerable.Range(0, len).Select(_ => "abcAB-1x"[rng.Next(8)]).ToArray());
@@ -417,5 +420,56 @@ public class CompiledRuleTests
         var twice = once.Compiled();
         Assert.All(twice.Values, rule => Assert.IsType<CompiledRule>(rule));
         Assert.True(Parser.Parse("ab-cd", Ref("word"), twice).Matched);
+    }
+
+    [Fact]
+    public void An_entry_rule_compiled_with_its_table_follows_edits_made_by_the_rules_it_calls()
+    {
+        var parts = new Dictionary<string, Rule>
+        {
+            ["strip"] = Dialect.Read("any [remove digit]"),
+            ["mid"] = Dialect.Read("strip"),
+        };
+        var table = parts.Compiled();
+        var entry = Dialect.Read("\"x\" mid \"y\"");
+        var alone = entry.Compiled();
+        Assert.Throws<InvalidOperationException>(() => Parser.Parse("x12y", alone, table));
+        var withTable = entry.Compiled(table);
+        var r = Parser.Parse("x12y", withTable, table);
+        Assert.True(r.Matched);
+        Assert.Equal("xy", r.Output);
+        Assert.Same(withTable, withTable.Compiled(table));
+        // a table with no edits needs nothing special
+        var plain = new Dictionary<string, Rule> { ["d"] = Some(Digit) }.Compiled();
+        Assert.True(Parser.Parse("12", Ref("d").Compiled(plain), plain).Matched);
+    }
+
+    [Fact]
+    public void Side_effects_in_a_called_rule_keep_the_careful_variant()
+    {
+        // item keeps, so a loop over it must take back a failed iteration's kept items
+        var parts = new Dictionary<string, Rule> { ["item"] = Dialect.Read("keep some alpha \",\"") };
+        var rule = Dialect.Read("collect c any item");
+        foreach (var input in new[] { "ab,cd,", "ab,cd", "ab,cd,e", "," })
+        {
+            var x = Describe(Parser.Parse(input, rule, parts, partial: true));
+            var y = Describe(Parser.Parse(input, rule.Compiled(parts.Compiled()), parts.Compiled(), partial: true));
+            Assert.Equal(x, y);
+        }
+        // the side effect can be further down: item calls the rule that keeps
+        var deep = new Dictionary<string, Rule>
+        {
+            ["leaf"] = Dialect.Read("keep some alpha"),
+            ["item"] = Dialect.Read("leaf \",\""),
+        };
+        foreach (var input in new[] { "ab,cd,", "ab,cd", "ab,cd,e" })
+            Assert.Equal(Describe(Parser.Parse(input, rule, deep, partial: true)),
+                         Describe(Parser.Parse(input, rule.Compiled(deep.Compiled()), deep.Compiled(), partial: true)));
+        // and a table whose rules are free of side effects takes the fast one
+        var free = new Dictionary<string, Rule> { ["item"] = Dialect.Read("some alpha \",\"") };
+        var fast = free.Compiled();
+        foreach (var input in new[] { "ab,cd,", "ab,cd", "" })
+            Assert.Equal(Describe(Parser.Parse(input, Dialect.Read("any item"), free, partial: true)),
+                         Describe(Parser.Parse(input, Dialect.Read("any item").Compiled(fast), fast, partial: true)));
     }
 }

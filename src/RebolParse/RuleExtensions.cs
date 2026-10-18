@@ -62,6 +62,14 @@ public static class RuleExtensions
     /// </summary>
     public static Rule Compiled(this Rule r) => r as CompiledRule ?? new CompiledRule(r);
 
+    /// <summary>
+    /// This rule compiled to IL, for a rule that calls the named rules in <paramref name="rules"/>. If any of them can edit the
+    /// text, this rule is compiled to read the edited text too. Use it for the entry rule next to a table made with
+    /// <see cref="Compiled(IReadOnlyDictionary{string, Rule})"/>.
+    /// </summary>
+    public static Rule Compiled(this Rule r, IReadOnlyDictionary<string, Rule> rules) =>
+        r as CompiledRule ?? new CompiledRule(r) { Buffered = IlCompiler.CallsEditingRule(r, rules) };
+
     /// <summary>A copy of this rule table with every rule compiled to IL. Pass it as the <c>rules</c> argument of <c>Parse</c>.</summary>
     public static Dictionary<string, Rule> Compiled(this IReadOnlyDictionary<string, Rule> rules)
     {
