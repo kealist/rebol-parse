@@ -118,7 +118,6 @@ public static class Dialect
 
     private static Rule ReadItem(List<Token> t, ref int i, Bindings acts)
     {
-        if (i >= t.Count) throw new FormatException("Rule ended where an item was expected.");
         var tok = t[i++];
         switch (tok.Kind)
         {
