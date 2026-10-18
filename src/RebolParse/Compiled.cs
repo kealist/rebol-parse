@@ -22,6 +22,7 @@ internal sealed class TextEngine
     private int length;       // used chars in the buffer, the gap included
     private int gapStart;     // logical index where the gap sits
     private int gapSize;      // chars in the gap; a removal widens it instead of shifting the tail
+    private bool bufferHolds; // the buffer has a copy of the text (it may not have been edited yet)
 
     // Once edited, the text is buffer[0..gapStart) + buffer[gapStart+gapSize..length). A removal just widens the
     // gap, so a sweep of removals from left to right moves each char at most once. Nodes read the text through a
@@ -36,6 +37,7 @@ internal sealed class TextEngine
         Ctx = ctx;
         readOnly = isReadOnly;
         Edited = false;
+        bufferHolds = false;
         gapStart = gapSize = 0;
         return text.AsSpan();
     }
@@ -101,15 +103,16 @@ internal sealed class TextEngine
         if (readOnly) throw new InvalidOperationException("This parse is read-only (IsMatch); use Parser.Parse to edit input.");
     }
 
-    /// <summary>Copy the text into the edit buffer the first time it changes.</summary>
-    private void BeginEdit(ReadOnlySpan<char> text)
+    /// <summary>Copy the text into the edit buffer if that has not happened yet. The text counts as edited only when an edit is made.</summary>
+    public void EnsureBuffer(ReadOnlySpan<char> text)
     {
-        if (Edited) return;
-        buffer = new char[Math.Max(text.Length, 64) * 2];
+        if (bufferHolds) return;
+        var needed = Math.Max(text.Length, 64) * 2;
+        if (buffer == null || buffer.Length < needed) buffer = new char[needed];
         text.CopyTo(buffer);
         length = text.Length;
         gapStart = gapSize = 0;
-        Edited = true;
+        bufferHolds = true;
     }
 
     /// <summary>Move the gap so it starts at logical index <paramref name="to"/>.</summary>
@@ -137,30 +140,69 @@ internal sealed class TextEngine
         length += extra;
     }
 
+    private void RemoveRange(int start, int end)
+    {
+        Edited = true;
+        MoveGap(start);
+        gapSize += end - start;
+    }
+
+    private int InsertText(int pos, object? value)
+    {
+        var str = value?.ToString() ?? "";
+        if (str.Length == 0) return 0;
+        Edited = true;
+        MoveGap(pos);
+        GrowGap(str.Length);
+        str.CopyTo(0, buffer!, gapStart, str.Length);
+        gapStart += str.Length;
+        gapSize -= str.Length;
+        return str.Length;
+    }
+
     public void Remove(ref ReadOnlySpan<char> text, int start, int end)
     {
         CheckWritable();
         if (end <= start) return;
-        BeginEdit(text);
-        MoveGap(start);
-        gapSize += end - start;
+        EnsureBuffer(text);
+        RemoveRange(start, end);
         text = View();
     }
 
     public int Insert(ref ReadOnlySpan<char> text, int pos, object? value)
     {
         CheckWritable();
-        var str = value?.ToString() ?? "";
-        if (str.Length == 0) return 0;
-        BeginEdit(text);
-        MoveGap(pos);
-        GrowGap(str.Length);
-        str.CopyTo(0, buffer!, gapStart, str.Length);
-        gapStart += str.Length;
-        gapSize -= str.Length;
+        EnsureBuffer(text);
+        var n = InsertText(pos, value);
         text = View();
-        return str.Length;
+        return n;
     }
+
+    // ---- for generated code, which reads the buffer directly: char at logical index i is Buffer[ViewOffset + i] for i >= the gap ----
+
+    public char[] Buffer => buffer!;
+    public int ViewOffset => gapStart >= length - gapSize ? 0 : gapSize;
+    public int ViewLength => length - gapSize;
+
+    /// <summary>True when <paramref name="pos"/> lies before the gap, so reading from it needs <see cref="SettleNow"/> first.</summary>
+    public bool NeedsSettle(int pos) => gapSize != 0 && pos < gapStart && gapStart < length - gapSize;
+
+    public void SettleNow() => MoveGap(length - gapSize);
+
+    public void RemoveAt(int start, int end)
+    {
+        CheckWritable();
+        if (end > start) RemoveRange(start, end);
+    }
+
+    public int InsertAt(int pos, object? value)
+    {
+        CheckWritable();
+        return InsertText(pos, value);
+    }
+
+    /// <summary>The text as nodes see it, once <see cref="EnsureBuffer"/> has put it in the buffer.</summary>
+    public ReadOnlySpan<char> CurrentText() => View();
 }
 
 /// <summary>
@@ -251,7 +293,7 @@ internal static class Compiler
                     string s => new LitString(s),
                     _ => new Never(),   // numbers and words never occur in text
                 };
-            case CompiledRule c: return IlCompiler.TryCompile(c.Body) ?? Compile(c.Body);
+            case CompiledRule c: return IlCompiler.TryCompile(c.Body, c.Buffered) ?? Compile(c.Body);
             case Seq q: { var items = CompileAll(q.Items); return new SeqNode(items) { Pure = AllPure(items) }; }
             case Alt a: { var items = CompileAll(a.Items); return new AltNode(items) { Pure = AllPure(items) }; }
             case SkipRule: return new SkipNode();

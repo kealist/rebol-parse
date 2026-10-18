@@ -63,6 +63,12 @@ public static class RuleExtensions
     public static Rule Compiled(this Rule r) => r as CompiledRule ?? new CompiledRule(r);
 
     /// <summary>A copy of this rule table with every rule compiled to IL. Pass it as the <c>rules</c> argument of <c>Parse</c>.</summary>
-    public static Dictionary<string, Rule> Compiled(this IReadOnlyDictionary<string, Rule> rules) =>
-        rules.ToDictionary(kv => kv.Key, kv => kv.Value.Compiled());
+    public static Dictionary<string, Rule> Compiled(this IReadOnlyDictionary<string, Rule> rules)
+    {
+        // a rule that can reach an edit must read the engine's edit buffer, as must the rules that call it
+        var buffered = IlCompiler.RulesReachingEdits(rules);
+        return rules.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value is CompiledRule ? kv.Value : new CompiledRule(kv.Value) { Buffered = buffered.Contains(kv.Key) });
+    }
 }

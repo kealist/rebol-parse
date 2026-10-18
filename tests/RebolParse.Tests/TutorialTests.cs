@@ -299,9 +299,10 @@ public class TutorialTests
         Assert.False(Parser.IsMatch("1,,2", list));
         Assert.True(((CompiledRule)list).IsNative);
 
-        Assert.True(((CompiledRule)R("some alpha").Compiled()).IsNative);
-        Assert.True(((CompiledRule)R("copy w some alpha").Compiled()).IsNative);
-        Assert.False(((CompiledRule)R("any [remove digit | skip]").Compiled()).IsNative);
-        Assert.False(((CompiledRule)R("collect o some [keep alpha]").Compiled()).IsNative);
+        // edits and collecting compile too
+        var strip = R("any [remove some digit | skip]").Compiled();
+        Assert.True(((CompiledRule)strip).IsNative);
+        Assert.Equal("abc", Parser.Parse("a1b22c", strip).Output);
+        Assert.True(((CompiledRule)R("collect o some [keep alpha]").Compiled()).IsNative);
     }
 }

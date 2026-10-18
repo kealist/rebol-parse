@@ -13,6 +13,8 @@ public class CompiledRuleTests
         ["cs"] = Chars("a-c"),
     };
 
+    // No bare inserts: an insert that is followed by a failure stays in the text, so a choice or loop around one can
+    // grow the text as fast as it advances and never end. Change still exercises the insert path, and never grows the text.
     private static Rule Gen(Random rng, int depth)
     {
         if (depth <= 0 || rng.Next(5) == 0)
@@ -34,7 +36,7 @@ public class CompiledRuleTests
                 _ => Is(o => o is char ch && ch == 'b'),
             };
         var d = depth - 1;
-        return rng.Next(16) switch
+        return rng.Next(26) switch
         {
             0 => Seq(Gen(rng, d), Gen(rng, d)),
             1 => Seq(Gen(rng, d), Gen(rng, d), Gen(rng, d)),
@@ -51,12 +53,30 @@ public class CompiledRuleTests
             12 => rng.Next(2) == 0 ? To(Gen(rng, d)) : Thru(Gen(rng, d)),
             13 => Seq(Gen(rng, d), End),
             14 => Rep(rng.Next(0, 3), rng.Next(0, 4), Seq(Not(CharIn("ab")), Skip)),
-            _ => Choice(Seq(Gen(rng, d), Fail), Gen(rng, d)),
+            15 => Choice(Seq(Gen(rng, d), Fail), Gen(rng, d)),
+            16 => Keep(Gen(rng, d)),
+            17 => KeepPick(Gen(rng, d)),
+            18 => Collect("c", Gen(rng, d)),
+            19 => Collect("c", Any(Choice(Keep(Gen(rng, d)), Skip))),
+            20 => Keep(ctx => ctx.Pos),
+            21 => Any(Choice(Seq(Gen(rng, d), Break), Gen(rng, d))),
+            22 => Any(Choice(Seq(Gen(rng, d), Reject), Gen(rng, d))),
+            23 => Seq(Gen(rng, d), Rng(rng, d)),
+            24 => Remove(Gen(rng, d)),
+            _ => Change(Seq(Skip, Gen(rng, d)), "X"),
         };
     }
 
+    private static Rule Rng(Random rng, int d) => rng.Next(3) switch
+    {
+        0 => Break,
+        1 => Reject,
+        _ => Gen(rng, d),
+    };
+
     private static string Describe(ParseResult r) =>
-        $"{r.Matched} @{r.Position} v={r.Vars.GetValueOrDefault("v")} w={r.Vars.GetValueOrDefault("w")}";
+        $"{r.Matched} @{r.Position} v={r.Vars.GetValueOrDefault("v")} w={r.Vars.GetValueOrDefault("w")} " +
+        $"c={(r.Vars.GetValueOrDefault("c") is IEnumerable<object> c ? string.Join("|", c) : null)} out={r.Output}";
 
     [Fact]
     public void Random_rules_match_the_interpreter()
@@ -78,8 +98,10 @@ public class CompiledRuleTests
             try { a = Describe(Parser.Parse(input, rule, Table, partial, ignoreCase)); } catch (Exception ex) { a = ex.GetType().Name; }
             try { b = Describe(Parser.Parse(input, compiled, compiledTable, partial, ignoreCase)); } catch (Exception ex) { b = ex.GetType().Name; }
             Assert.True(a == b, $"input '{input}' partial={partial} ignoreCase={ignoreCase}\n rule {rule}\n interpreter {a}\n compiled    {b}");
-            Assert.Equal(Parser.IsMatch(input, rule, Table, partial, ignoreCase),
-                         Parser.IsMatch(input, compiled, compiledTable, partial, ignoreCase));
+            string c, d;
+            try { c = Parser.IsMatch(input, rule, Table, partial, ignoreCase).ToString(); } catch (Exception ex) { c = ex.GetType().Name; }
+            try { d = Parser.IsMatch(input, compiled, compiledTable, partial, ignoreCase).ToString(); } catch (Exception ex) { d = ex.GetType().Name; }
+            Assert.True(c == d, $"IsMatch on '{input}'\n rule {rule}\n interpreter {c}\n compiled    {d}");
         }
         Assert.Equal(4000, native);   // every generated rule is in the IL subset, so none quietly fell back
     }
@@ -104,27 +126,158 @@ public class CompiledRuleTests
         Assert.True(Dialect.Read("some [alpha | digit]").Compiled().Compiled() is CompiledRule { IsNative: true });
     }
 
+    // rules that edit and call other rules: the table is compiled together so the callers read the edit buffer too
+    [Theory]
+    [InlineData("any [remove digit | skip] word")]
+    [InlineData("any [change dig \"#\" | skip]")]
+    [InlineData("any [remove dig | word | skip]")]
+    [InlineData("insert \"x\" word")]
+    [InlineData("any [copy v dig (@note) | change ab \"Z\" | skip]")]
+    public void Edits_that_call_other_rules_compile_and_agree(string text)
+    {
+        var acts = new Dictionary<string, Action<Ctx>> { ["note"] = _ => { } };
+        var rule = Dialect.Read(text, acts);
+        var compiled = rule.Compiled();
+        Assert.True(((CompiledRule)compiled).IsNative);
+        foreach (var input in new[] { "", "ab", "a1b2", "aaab", "123", "ab-cd" })
+        {
+            string x, y;
+            try { x = Describe(Parser.Parse(input, rule, Table, partial: true)); } catch (Exception ex) { x = ex.GetType().Name; }
+            try { y = Describe(Parser.Parse(input, compiled, Table.Compiled(), partial: true)); } catch (Exception ex) { y = ex.GetType().Name; }
+            Assert.Equal(x, y);
+        }
+    }
+
+    [Fact]
+    public void A_rule_that_reads_the_string_cannot_call_a_rule_that_edits_unless_the_table_is_compiled_together()
+    {
+        var parts = new Dictionary<string, Rule>
+        {
+            ["strip"] = Dialect.Read("any [remove digit]"),
+            ["main"] = Dialect.Read("\"x\" strip \"y\""),
+        };
+        var one = new Dictionary<string, Rule> { ["strip"] = parts["strip"].Compiled(), ["main"] = parts["main"].Compiled() };
+        var error = Assert.Throws<InvalidOperationException>(() => Parser.Parse("x12y", Ref("main"), one));
+        Assert.Contains("Compiled()", error.Message);
+        var together = Parser.Parse("x12y", Ref("main"), parts.Compiled());
+        Assert.True(together.Matched);
+        Assert.Equal("xy", together.Output);
+        Assert.Equal(Parser.Parse("x12y", Ref("main"), parts).Output, together.Output);
+    }
+
+    // edits compile when the rule does not call others
+    [Theory]
+    [InlineData("any [remove digit | skip]")]
+    [InlineData("any [change some digit \"#\" | skip]")]
+    [InlineData("insert \"x\" to end")]
+    [InlineData("any [remove \"a\" skip change \"c\" \"CC\" | skip]")]
+    [InlineData("to [skip remove \"b\"] \"a\" \"c\"")]
+    [InlineData("ahead [skip remove \"b\"] \"a\" \"c\"")]
+    [InlineData("not [skip remove \"x\"] skip skip skip")]
+    [InlineData("m: skip remove \"b\" :m \"a\" \"c\"")]
+    [InlineData("[\"a\" remove \"b\" \"z\" | \"a\" \"c\"]")]
+    [InlineData("copy v [skip remove \"b\" skip]")]
+    [InlineData("collect c [skip remove \"b\" keep skip]")]
+    [InlineData("thru [remove \"b\" \"x\"] to end")]
+    [InlineData("any [remove some digit | some alpha | skip]")]
+    [InlineData("any [remove [some digit \",\"] | skip] to end")]
+    [InlineData("any [\"x\" insert \"yy\" | skip]")]
+    // a failed attempt edits further along than it started, and the text is read again from the start
+    [InlineData("not [skip remove \"b\" \"z\"] \"a\" \"c\"")]
+    [InlineData("any [skip remove \"b\" \"z\"] \"a\" \"c\"")]
+    [InlineData("to [skip skip remove \"c\" \"z\"] to end")]
+    [InlineData("thru [skip skip remove \"c\" \"z\"] to end")]
+    [InlineData("collect c [keep [skip remove \"b\" skip]]")]
+    [InlineData("collect c [keep pick [skip remove \"b\" skip]]")]
+    [InlineData("set v [skip remove \"b\" skip]")]
+    [InlineData("remove \"a\" to #\"C\" to end")]
+    [InlineData("remove \"a\" thru #\"c\" to end")]
+    [InlineData("remove \"a\" to \"BC\" to end")]
+    public void Edits_compile_and_agree(string text)
+    {
+        var rule = Dialect.Read(text);
+        var compiled = rule.Compiled();
+        Assert.True(((CompiledRule)compiled).IsNative);
+        foreach (var input in new[] { "", "abc", "abxc", "a1b22c333", "xx", "ab,12,c", "1,2,3", "aaab", "abcd", "abcabc" })
+            foreach (var partial in new[] { true, false })
+                foreach (var ignoreCase in new[] { false, true })
+                {
+                    string x, y;
+                    try { x = Describe(Parser.Parse(input, rule, partial: partial, ignoreCase: ignoreCase)); } catch (Exception ex) { x = ex.GetType().Name; }
+                    try { y = Describe(Parser.Parse(input, compiled, partial: partial, ignoreCase: ignoreCase)); } catch (Exception ex) { y = ex.GetType().Name; }
+                    Assert.Equal(x, y);
+                }
+    }
+
+    // every small attempt-then-edit-then-fail shape inside to, thru, not, any and ahead, on every short input
+    [Fact]
+    public void Rewinding_past_edits_agrees_on_every_small_case()
+    {
+        var starts = new[] { "\"a\"", "\"b\"", "skip", "none" };
+        var gaps = new[] { "", "skip", "skip skip" };
+        var edits = new[] { "remove \"a\"", "remove \"b\"", "remove \"c\"", "change \"b\" \"Z\"" };
+        var ends = new[] { "\"a\"", "\"b\"", "\"z\"", "end" };
+        var wrappers = new[] { "to [{0}] to end", "thru [{0}] to end", "not [{0}] to end", "any [{0}] to end", "ahead [{0}] to end", "any [{0} | skip]" };
+        var inputs = new List<string> { "" };
+        for (var round = 0; round < 5; round++)
+            inputs.AddRange(inputs.Where(i => i.Length == round).SelectMany(i => new[] { i + "a", i + "b", i + "c" }).ToList());
+        var checkedCases = 0;
+        foreach (var start in starts)
+            foreach (var gap in gaps)
+                foreach (var edit in edits)
+                    foreach (var end in ends)
+                        foreach (var wrapper in wrappers)
+                        {
+                            var rule = Dialect.Read(string.Format(wrapper, $"{start} {gap} {edit} {end}"));
+                            var compiled = rule.Compiled();
+                            foreach (var input in inputs)
+                            {
+                                var x = Describe(Parser.Parse(input, rule, partial: true));
+                                var y = Describe(Parser.Parse(input, compiled, partial: true));
+                                Assert.True(x == y, $"{string.Format(wrapper, $"{start} {gap} {edit} {end}")} on '{input}'\n interpreter {x}\n compiled    {y}");
+                                checkedCases++;
+                            }
+                        }
+        Assert.True(checkedCases > 100_000);
+    }
+
     [Theory]
     [InlineData("some [\"a\" break | \"b\"]")]
-    [InlineData("collect out some [keep alpha]")]
-    [InlineData("any [remove digit | skip]")]
-    [InlineData("any [change digit \"#\" | skip]")]
-    [InlineData("insert \"x\" to end")]
+    [InlineData("collect c some [keep alpha]")]
     [InlineData("any [\"a\" reject | skip]")]
-    [InlineData("collect out [keep pick skip] to end")]
-    [InlineData("collect out [keep (@one)] to end")]
-    public void Rules_with_unsupported_parts_fall_back_and_agree(string text)
+    [InlineData("collect c [keep pick skip] to end")]
+    [InlineData("collect c [keep (@one)] to end")]
+    [InlineData("collect c any [keep some alpha | skip]")]
+    [InlineData("collect c [any [[keep \"a\" \"z\"] | keep \"a\"] skip]")]
+    [InlineData("reject")]
+    [InlineData("keep skip")]
+    // a failed attempt takes back what it kept: inside not, a scan, a loop body and a lookahead
+    [InlineData("collect c [not [keep \"a\" \"z\"] some skip]")]
+    [InlineData("collect c [thru [keep \"a\" \"z\"] skip]")]
+    [InlineData("collect c [to [keep \"a\" \"z\"] to end]")]
+    [InlineData("collect c [any [keep \"a\" \"z\"] to end]")]
+    [InlineData("collect c [ahead [keep \"a\" \"z\"] | keep \"a\" to end]")]
+    [InlineData("collect c [any [keep \"a\" [break | none]] keep skip]")]
+    [InlineData("collect c some [keep \"a\" reject | keep skip]")]
+    [InlineData("any [any [\"a\" reject] | \"a\"]")]
+    // a flag that is already set when an attempt starts must survive the attempt failing
+    [InlineData("collect c any [\"a\" break [keep \"z\" \"q\" | keep \"b\"] skip]")]
+    [InlineData("collect c any [\"a\" reject [keep \"z\" \"q\" | keep \"b\"] skip]")]
+    [InlineData("collect c any [\"a\" break not [keep \"z\" \"q\"] skip]")]
+    public void Break_reject_and_collect_compile_and_agree(string text)
     {
         var values = new Dictionary<string, Func<Ctx, object?>> { ["one"] = _ => 1 };
         var rule = Dialect.Read(text, null, values);
         var compiled = rule.Compiled();
-        Assert.False(((CompiledRule)compiled).IsNative);
-        foreach (var input in new[] { "", "ab", "a1b2", "aaab", "123" })
-        {
-            var x = Parser.Parse(input, rule, partial: true);
-            var y = Parser.Parse(input, compiled, partial: true);
-            Assert.Equal((x.Matched, x.Position, x.Output), (y.Matched, y.Position, y.Output));
-        }
+        Assert.True(((CompiledRule)compiled).IsNative);
+        foreach (var input in new[] { "", "ab", "a1b2", "aaab", "abz", "123", "aaaz" })
+            foreach (var partial in new[] { true, false })
+            {
+                string x, y;
+                try { x = Describe(Parser.Parse(input, rule, partial: partial)); } catch (Exception ex) { x = ex.GetType().Name; }
+                try { y = Describe(Parser.Parse(input, compiled, partial: partial)); } catch (Exception ex) { y = ex.GetType().Name; }
+                Assert.Equal(x, y);
+            }
     }
 
     [Fact]
@@ -165,11 +318,13 @@ public class CompiledRuleTests
     }
 
     [Fact]
-    public void A_compiled_rule_reached_after_an_edit_is_refused()
+    public void A_compiled_rule_can_run_after_another_rule_edited_the_text()
     {
         var rule = Seq(Remove("a"), Ref("c"));
         var rules = new Dictionary<string, Rule> { ["c"] = Lit("b").Compiled() };
-        Assert.Throws<InvalidOperationException>(() => Parser.Parse("ab", rule, rules));
+        var r = Parser.Parse("ab", rule, rules);
+        Assert.True(r.Matched);
+        Assert.Equal("b", r.Output);
     }
 
     [Fact]
@@ -226,5 +381,41 @@ public class CompiledRuleTests
                 var b = Parser.Parse(input, rule.Compiled(), partial: true, ignoreCase: true);
                 Assert.Equal((a.Matched, a.Position), (b.Matched, b.Position));
             }
+    }
+
+    [Fact]
+    public void A_compiled_rule_that_edits_can_call_an_interpreted_rule()
+    {
+        // the called rule is interpreted and edits ahead of where it started, then puts the position back
+        var rules = new Dictionary<string, Rule> { ["peek"] = Ahead(Seq(Skip, Remove("b"))) };
+        var rule = Seq(Ref("peek"), "a", Remove("c"));
+        var interpreted = Parser.Parse("abc", rule, rules);
+        var compiled = Parser.Parse("abc", rule.Compiled(), rules);
+        Assert.True(interpreted.Matched);
+        Assert.Equal("a", interpreted.Output);
+        Assert.Equal(Describe(interpreted), Describe(compiled));
+
+        // and when the interpreted rule does not match
+        var failing = new Dictionary<string, Rule> { ["peek"] = Ahead(Seq(Skip, Remove("q"))) };
+        Assert.False(Parser.Parse("abc", rule, failing).Matched);
+        Assert.False(Parser.Parse("abc", rule.Compiled(), failing).Matched);
+    }
+
+    private sealed record Custom : Rule;
+
+    [Fact]
+    public void A_rule_type_the_engine_does_not_know_is_rejected_compiled_or_not()
+    {
+        Assert.Throws<NotSupportedException>(() => Parser.IsMatch("x", new Custom()));
+        Assert.Throws<NotSupportedException>(() => Parser.IsMatch("x", new Custom().Compiled()));
+    }
+
+    [Fact]
+    public void Compiling_a_table_twice_keeps_it_compiled()
+    {
+        var once = Table.Compiled();
+        var twice = once.Compiled();
+        Assert.All(twice.Values, rule => Assert.IsType<CompiledRule>(rule));
+        Assert.True(Parser.Parse("ab-cd", Ref("word"), twice).Matched);
     }
 }
