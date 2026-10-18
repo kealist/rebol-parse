@@ -2,6 +2,29 @@
 
 [REBOL's `parse` dialect](http://www.rebol.com/docs/core23/rebolcore-15.html) for C#: a compact grammar language for matching, extracting and rewriting text and structured data. It sits between regular expressions and a full parser generator. Rules read left to right like the input they describe, they can recurse, and they run actions as they match.
 
+## Why use it
+
+Regular expressions are fine until a pattern has to nest, capture several things, or be understood by someone else next month. The usual next step is a parser generator, which means a grammar file, a build step and a generated class. Parse fills the gap between them. A rule is a string, or a few lines of C#, that lives next to the code that uses it. It reads in the order the input is written, and it can call itself.
+
+What you get:
+
+- **Rules you can read.** `copy key some alpha "=" copy value some digit` says what it matches, in order. The regex equivalent has groups you count by index.
+- **Recursion.** Balanced brackets, nested lists and arithmetic are a rule that refers to itself. .NET regex can match balanced text only with balancing groups, which are hard to write and harder to read.
+- **Actions in the middle of a match.** `(@name)` calls a C# delegate as soon as that part matches. The calculator sample evaluates `2*(3+4)` while it parses, with no tree built first.
+- **Errors you can locate.** You can parse a file line by line, report line 14, and still load the other lines. The INI sample does this.
+- **One rule set for text and data.** The same rules match characters in a string or items in a list, including nested lists.
+- **Safe to load from outside.** Rule text can come from a config file or a user. It cannot run code. It can only call delegates you registered.
+- **Speed that is easy to check.** Interpreted, it is faster than the interpreted .NET `Regex` on most of the benchmark tasks and slower on one (bulk deletion). With `.Compiled()`, validating a phone number takes about 10 ns against 14 ns for a compiled `Regex`, and a long list of numbers about 5 times faster. The [benchmarks](docs/Benchmarks.md) show the losses too.
+- **Tested against itself.** The library has 100% line and branch coverage, and random rules are run through the string engine, the list engine and the IL compiler, which must all agree.
+
+When another tool is the better choice:
+
+- For a simple pattern, a regex is shorter and everyone already knows it.
+- To read whole JSON or XML documents quickly, use `System.Text.Json` or `System.Xml`. A parse grammar reads full JSON 3 to 5 times slower than `System.Text.Json`. It wins only when you can stop early, for example to read the first few properties of a large document.
+- Matching lists is interpreted, not compiled, so it is slower than matching text.
+- Captures, actions and edits made in a branch that later fails are not undone, as in REBOL. [The reference](docs/Reference.md#what-is-undone-when-a-branch-fails) explains how to write rules around that.
+- This is REBOL's dialect, not a complete copy. `then`, `return`, `limit` and the `only` refinements are not implemented.
+
 ```csharp
 using RebolParse;
 
@@ -15,9 +38,8 @@ result.Vars["value"];  // "640"
 
 - **Two ways to write rules, one engine.** Rule text like `some digit "." some digit`, or fluent C# like `Some(Digit) + "." + Some(Digit)`.
 - **Text and structured data.** The same rules match characters in a string or items in a list, including nested lists.
-- **Recursion.** Named rules can refer to each other, so balanced brackets, nested lists and expression grammars are direct to write. Regular expressions cannot do this without engine-specific extensions.
 - **Capture, collect, rewrite.** `copy`, `collect`/`keep`, and `insert`/`change`/`remove` pull data out of input or edit it as it is matched.
-- **Fast and allocation-free where it counts.** Rules compile on first use. `Parser.IsMatch` allocates nothing. See [Performance](#performance).
+- **Allocation-free validation.** `Parser.IsMatch` allocates nothing. See [Performance](#performance).
 
 ## Install
 
