@@ -567,16 +567,26 @@ public class CompiledRuleTests
     [Fact]
     public void Compiled_rules_call_interpreted_rules_that_are_too_awkward_to_write_in()
     {
-        // recursive, so it is never written into the caller; and left uncompiled, so it runs on the interpreter
+        // recursive, so only the first few levels are written into the caller, and left uncompiled, so the rest run on the interpreter
         var table = new Dictionary<string, Rule> { ["w"] = Some(Alpha) + Opt("-" + Ref("w")) };
-        Assert.True(Parser.Parse("ab-cd", Ref("w").Compiled(), table).Matched);
-        Assert.False(Parser.Parse("-", Ref("w").Compiled(), table).Matched);
+        const string deep = "a-b-c-d-e-f-g-h";
+        Assert.True(Parser.Parse(deep, Ref("w").Compiled(), table).Matched);
+        Assert.False(Parser.Parse(deep + "-", Ref("w").Compiled(), table).Matched);
+        Assert.False(Parser.Parse("a-b-c-1", Ref("w").Compiled(), table).Matched);   // the deepest call fails to match
         // and from code that reads the edit buffer
         var editing = Seq(Remove("x"), Ref("w")).Compiled();
-        var ok = Parser.Parse("xab-cd", editing, table);
+        var ok = Parser.Parse("x" + deep, editing, table);
         Assert.True(ok.Matched);
-        Assert.Equal("ab-cd", ok.Output);
-        Assert.False(Parser.Parse("x-", editing, table).Matched);
+        Assert.Equal(deep, ok.Output);
+        Assert.False(Parser.Parse("x" + deep + "-", editing, table).Matched);
+        Assert.False(Parser.Parse("xa-b-c-1", editing, table).Matched);
+
+        // a compiled rule called again and again from code that reads the edit buffer: the call is looked up once
+        var compiledTable = table.Compiled();
+        var loop = Any(Seq(Remove("#"), Ref("w"))).Compiled(compiledTable);
+        var twice = Parser.Parse("#" + deep + "#" + deep + "#" + deep, loop, compiledTable);
+        Assert.True(twice.Matched);
+        Assert.Equal(deep + deep + deep, twice.Output);
     }
 
     [Fact]
