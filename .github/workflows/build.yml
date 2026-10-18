@@ -54,6 +54,11 @@ jobs:
       contents: read
     environment: nuget   # the same name goes in the nuget.org policy; add required reviewers to it in GitHub to approve each release
     steps:
+      # checkout first: it cleans the workspace, which would delete the downloaded package
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+
       - uses: actions/download-artifact@v4
         with:
           name: package
@@ -64,9 +69,6 @@ jobs:
           dotnet-version: 10.0.x
 
       # swaps the job's GitHub identity token for a short-lived nuget.org API key (see the script for the steps)
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: scripts
       - name: Get a nuget.org API key
         id: login
         run: scripts/nuget-login.sh
@@ -74,4 +76,6 @@ jobs:
           NUGET_USER: ${{ secrets.NUGET_USER }}   # your nuget.org profile name, not your email
 
       - name: Push
-        run: dotnet nuget push "artifacts/*.nupkg" --api-key "${{ steps.login.outputs.api_key }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: |
+          ls -l artifacts
+          dotnet nuget push "artifacts/*.nupkg" --api-key "${{ steps.login.outputs.api_key }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
