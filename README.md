@@ -148,6 +148,7 @@ Compile once and reuse; the first compile in a process takes about 30 ms. Rules 
 | [Tutorial](docs/Tutorial.md) | Sixteen lessons with exercises and solutions, from your first rule to an INI-file parser and compiling to IL. Start here if you are new to parse. |
 | [Reference](docs/Reference.md) | Every keyword and the text syntax, grammars, what a parse returns, errors, what backtracking undoes, compiling to IL, and limits. |
 | [Benchmarks](docs/Benchmarks.md) | Comparison with .NET `Regex` and `System.Text.Json`, the interpreter against the IL back end, with numbers and caveats. |
+| [Architecture](docs/Architecture.md) | For contributors: the three engines, the node compiler, the gap buffer, choice dispatch, the IL back end, the invariants, the tests, and how to add a keyword. |
 | [Samples](samples/README.md) | Eight runnable programs that check their own results: a calculator, a JSON reader, INI, CSV, log analysis, a source cleaner, a block-mode robot language, and a template engine. |
 
 The public API is fully documented with XML comments, so IntelliSense shows what each keyword does.

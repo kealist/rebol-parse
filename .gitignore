@@ -5,3 +5,4 @@ obj/
 *.snupkg
 .idea/
 BenchmarkDotNet.Artifacts/
+TestResults/
