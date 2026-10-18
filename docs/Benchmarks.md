@@ -34,18 +34,21 @@ Pick RebolParse for grammars that are awkward or impossible as regex (recursion,
 
 ## Reading properties out of JSON: RebolParse vs System.Text.Json
 
-Three properties per call (for example `author.name`, `tags[1]`, `version`), on a 400-byte document and on a 150 KB array of 2,000 records. The RebolParse side uses the grammar from the [JSON sample](../samples/Samples/JsonDemo.cs) in two ways: read the whole document into objects and look the paths up, or use a rule that skips straight to each property and copies only its text. Each benchmark checks in setup that every method returns the same three values.
+Three properties per call (for example `author.name`, `tags[1]`, `version`), on a 400-byte document and on a 150 KB array of 2,000 records. The RebolParse side uses the grammar from the [JSON sample](../samples/Samples/JsonDemo.cs) in two ways: read the whole document into objects and navigate to the paths, or use a rule that skips straight to each property and copies only its text. Each benchmark checks in setup that every method returns the same three values.
 
 | Document | `JsonDocument` (string) | `JsonDocument` (UTF-8) | `JsonNode` | RebolParse, full read | RebolParse, skip to property |
 |---|---|---|---|---|---|
-| 400 B | 1.37 µs, 336 B | 1.28 µs, 336 B | 1.80 µs, 2.9 KB | 14.3 µs, 18.9 KB | 4.3 µs, 1.5 KB |
-| 150 KB, properties at start, middle, end | 513 µs, 328 B | 506 µs, 328 B | 610 µs, 574 KB | 3,907 µs, 1.9 MB | 4,046 µs, 1.5 KB |
-| 150 KB, properties in the first 3 records | 504 µs, 312 B | 507 µs, 312 B | 608 µs, 574 KB | 3,898 µs, 1.9 MB | **5.9 µs**, 1.5 KB |
+| 400 B | 1.39 µs, 336 B | 1.28 µs, 336 B | 1.86 µs, 2.9 KB | 4.5 µs, 3.3 KB | 2.0 µs, 1.5 KB |
+| 150 KB, properties at start, middle, end | 509 µs, 328 B | 496 µs, 328 B | 641 µs, 574 KB | 2,440 µs, 1.9 MB | 1,933 µs, 1.5 KB |
+| 150 KB, properties in the first 3 records | 507 µs, 312 B | 502 µs, 312 B | 612 µs, 574 KB | 2,431 µs, 1.9 MB | **3.7 µs**, 1.5 KB |
 
-- **If you need to look at the whole document, `System.Text.Json` wins by 8-10x.** It is a hand-tuned UTF-8 state machine, and `JsonDocument` does not even build objects (it records offsets into the buffer). RebolParse's JSON grammar runs at roughly 40-55 MB/s here, about 18 ns a character, where the library's flat-text numbers above are several times faster. Recursive grammars with `Ref` and ordered choice at every value are the slow path: each value tries `object`, `array`, `string` and `number` in turn.
-- **Building objects is not the main cost.** The full read allocates 1.9 MB for the large document and the skip-only rules allocate 1.5 KB, but they take the same time. The time is in matching.
-- **A parse can stop early; `JsonDocument` cannot.** It validates and indexes the whole document before you can ask for anything. RebolParse's skip rule stops as soon as it has the last property, so reading from the first few records takes 6 µs against 504 µs, 85x faster. That is the one case where this wins, and it needs a partial parse.
-- **For ordinary JSON, use `System.Text.Json`.** The point of the sample is that a grammar is a few lines and yields precise errors, not that it competes with a dedicated reader. The numbers are a map of where a grammar-driven reader stands, and the JSON grammar is a candidate for tuning (a first-character dispatch for `value`, for instance, would skip three failed alternatives per value).
+- **If you need the whole document, `System.Text.Json` is 3-5x faster.** It is a hand-tuned UTF-8 state machine, and `JsonDocument` does not even build objects: it records offsets into the buffer. RebolParse's grammar-driven reader runs at about 45-60 MB/s on this document, against several hundred MB/s on flat text, because a recursive grammar pays a few virtual calls for every value.
+- **Skipping to a property is closer.** On the small document it is 1.4x `JsonDocument`; on the large one, 3.8x, since it still has to step over every value before the property it wants.
+- **A parse can stop early; `JsonDocument` cannot.** It validates and indexes the whole document before you can ask for anything. The skip rule stops as soon as it has the last property, so reading from the first few records takes 3.7 µs against 507 µs, 137x faster. This is the one case where RebolParse wins, and it needs a partial parse.
+- **Building objects is a minor cost.** The full read allocates 1.9 MB and the skip rules 1.5 KB, but the time is only 25% different. Most of it is matching.
+- **For ordinary JSON, use `System.Text.Json`.** The sample shows that a grammar is a few lines and gives precise errors, not that it competes with a dedicated reader.
+
+**What tuning did.** The first version of this comparison took 4.0 ms (large, skip) and 3.9 ms (large, full read). Two engine changes brought it to 1.9 and 2.4 ms. A loop of the form `some [not X skip]` with one-character `X` now compiles to a single scan (`IndexOfAny` when `X` is plain characters). A choice now knows which characters each alternative can start with and skips the ones that cannot match the next character, which removes three or four failed attempts per JSON value. Writing the string rule as `any [some [not ["^\"" | "\\"] skip] | "\\" skip]` instead of one character at a time lets it use the scan.
 
 ## Run it
 

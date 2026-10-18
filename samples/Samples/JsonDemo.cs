@@ -46,7 +46,7 @@ public sealed class JsonDemo : IDemo
             array  = "[" (@open) ws opt [value ws any ["," ws value ws]] "]" (@array)
             object = "{" (@open) ws opt [member ws any ["," ws member ws]] "}" (@object)
             member = string ws ":" ws value
-            string = "^"" copy s any [not ["^"" | "\"] skip | "\" skip] "^"" (@string)
+            string = "^"" copy s any [some [not ["^"" | "\"] skip] | "\" skip] "^"" (@string)
             number = copy n [opt "-" ["0" | some digit] opt ["." some digit]
                              opt [charset "eE" opt charset "+-" some digit]] (@number)
             """, actions);

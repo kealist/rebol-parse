@@ -35,7 +35,7 @@ public class JsonLookup
         array  = "[" ws opt [value ws any ["," ws value ws]] "]"
         object = "{" ws opt [member ws any ["," ws member ws]] "}"
         member = string ws ":" ws value
-        string = "^"" any [not ["^"" | "\"] skip | "\" skip] "^""
+        string = "^"" any [some [not ["^"" | "\"] skip] | "\" skip] "^""
         number = opt "-" ["0" | some digit] opt ["." some digit] opt [charset "eE" opt charset "+-" some digit]
         """);
 
@@ -157,9 +157,11 @@ public class JsonLookup
     {
         var root = reader.Read(json);
         var sb = new StringBuilder();
-        foreach (var path in paths)
+        foreach (var path in steps)
         {
-            var v = JsonDemo.Get(root, path);
+            var v = root;
+            foreach (var step in path)
+                v = step.Key is { } k ? ((Dictionary<string, object?>)v!)[k] : ((List<object?>)v!)[step.Index];
             sb.Append(v is double d ? d.ToString(CultureInfo.InvariantCulture) : v?.ToString()).Append('|');
         }
         return sb.ToString();
