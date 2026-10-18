@@ -507,4 +507,97 @@ public class CompiledRuleTests
             Assert.Throws<InvalidOperationException>(() => Parser.IsMatch(new string('1', length), strip));
         Assert.True(Parser.IsMatch("abc", strip));
     }
+
+    [Fact]
+    public void Rules_that_call_each_other_are_not_written_into_one_another_forever()
+    {
+        var table = Dialect.ReadGrammar("""
+            a = "x" b | "y"
+            b = "z" a | "w"
+            self = "q" self | "r"
+            """);
+        var compiled = table.Compiled();
+        foreach (var input in new[] { "y", "xw", "xzy", "xzxw", "xzxzy", "xz", "", "qqr", "qqqr", "q" })
+            foreach (var start in new[] { "a", "b", "self" })
+                Assert.Equal(Describe(Parser.Parse(input, Ref(start), table, partial: true)),
+                             Describe(Parser.Parse(input, Ref(start), compiled, partial: true)));
+    }
+
+    [Fact]
+    public void A_rule_too_big_to_write_into_another_is_still_called_correctly()
+    {
+        var big = Seq(Enumerable.Range(0, 80).Select(i => (Rule)(i % 2 == 0 ? "a" : "b")).ToArray());
+        var table = new Dictionary<string, Rule> { ["big"] = big, ["small"] = Lit("c") };
+        var compiled = table.Compiled();
+        var rule = Seq(Ref("big"), Ref("small"), Ref("big"));
+        var text = string.Concat(Enumerable.Repeat("ab", 40)) + "c" + string.Concat(Enumerable.Repeat("ab", 40));
+        Assert.True(Parser.Parse(text, rule.Compiled(compiled), compiled).Matched);
+        Assert.False(Parser.Parse(text + "x", rule.Compiled(compiled), compiled).Matched);
+        // a long chain of small rules is written in only up to a budget, and the rest are called
+        var chain = Enumerable.Range(0, 60).ToDictionary(i => $"r{i}", i => i == 59 ? (Rule)Lit("z") : Seq(Lit("a"), Ref($"r{i + 1}")));
+        var chained = chain.Compiled();
+        var long_ = new string('a', 59) + "z";
+        Assert.True(Parser.Parse(long_, Ref("r0"), chained).Matched);
+        Assert.False(Parser.Parse(long_[..^1], Ref("r0"), chained).Matched);
+    }
+
+    [Fact]
+    public void Small_rules_written_into_a_caller_follow_the_table_in_use()
+    {
+        var hits = 0;
+        var withNote = Dialect.Read("copy v item (@note) end", new Dictionary<string, Action<Ctx>> { ["note"] = _ => hits++ }).Compiled();
+        var digits = new Dictionary<string, Rule> { ["item"] = Some(Digit) };
+        var letters = new Dictionary<string, Rule> { ["item"] = Some(Alpha) };
+        // the same compiled rule against two tables, several times over
+        for (var round = 0; round < 3; round++)
+        {
+            Assert.True(Parser.Parse("123", withNote, digits.Compiled()).Matched);
+            Assert.False(Parser.Parse("123", withNote, letters.Compiled()).Matched);
+        }
+        Assert.Equal(3, hits);
+        var d = digits.Compiled();
+        var l = letters.Compiled();
+        for (var round = 0; round < 3; round++)
+        {
+            Assert.True(Parser.Parse("abc", withNote, l).Matched);
+            Assert.False(Parser.Parse("abc", withNote, d).Matched);
+        }
+    }
+
+    [Fact]
+    public void Compiled_rules_call_interpreted_rules_that_are_too_awkward_to_write_in()
+    {
+        // recursive, so it is never written into the caller; and left uncompiled, so it runs on the interpreter
+        var table = new Dictionary<string, Rule> { ["w"] = Some(Alpha) + Opt("-" + Ref("w")) };
+        Assert.True(Parser.Parse("ab-cd", Ref("w").Compiled(), table).Matched);
+        Assert.False(Parser.Parse("-", Ref("w").Compiled(), table).Matched);
+        // and from code that reads the edit buffer
+        var editing = Seq(Remove("x"), Ref("w")).Compiled();
+        var ok = Parser.Parse("xab-cd", editing, table);
+        Assert.True(ok.Matched);
+        Assert.Equal("ab-cd", ok.Output);
+        Assert.False(Parser.Parse("x-", editing, table).Matched);
+    }
+
+    [Fact]
+    public void A_compiled_rule_nested_in_a_rule_that_calls_others_is_written_in_too()
+    {
+        var table = new Dictionary<string, Rule> { ["d"] = Some(Digit) }.Compiled();
+        var rule = Seq(Ref("d"), Lit("b").Compiled(), Opt(Lit("c").Compiled())).Compiled(table);
+        Assert.True(Parser.Parse("12bc", rule, table).Matched);
+        Assert.True(Parser.Parse("12b", rule, table).Matched);
+        Assert.False(Parser.Parse("12", rule, table).Matched);
+    }
+
+    [Fact]
+    public void Writing_rules_into_callers_stays_within_a_budget_when_rules_call_each_other_many_times()
+    {
+        // each level calls the next one twice, so writing every call in would make 2^24 copies
+        var table = Enumerable.Range(0, 24).ToDictionary(i => $"r{i}", i => i == 23 ? (Rule)Lit("a") : Seq(Ref($"r{i + 1}"), Ref($"r{i + 1}")));
+        var compiled = table.Compiled();
+        var text = new string('a', 1 << 10);
+        Assert.False(Parser.Parse(text, Ref("r0"), compiled).Matched);   // 2^23 a's are needed; the point is that it returns
+        var shallow = Enumerable.Range(0, 5).ToDictionary(i => $"r{i}", i => i == 4 ? (Rule)Lit("a") : Seq(Ref($"r{i + 1}"), Ref($"r{i + 1}"))).Compiled();
+        Assert.True(Parser.Parse(new string('a', 16), Ref("r0"), shallow).Matched);
+    }
 }

@@ -27,49 +27,55 @@ internal delegate int IlFn(string text, int pos, TextEngine e);
 internal sealed class IlNode : Node
 {
     private readonly Rule rule;
-    private readonly string[] refs;   // the rules this rule calls
-    private readonly IlFn?[] variants = new IlFn?[4];   // by (reads the edit buffer, calls only rules with no side effects)
+    private readonly bool hasCalls;   // whether the rule calls any other rule by name
+    private readonly IlFn?[] standalone = new IlFn?[2];   // for a rule that calls nothing: by (reads the edit buffer)
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<IReadOnlyDictionary<string, Rule>, ForTable> tables = new();
 
-    private sealed class Calls(IReadOnlyDictionary<string, Rule> rules, bool effectFree)
+    // What the rule becomes in one rule table: small non-recursive rules it calls are written into it, and what is left
+    // of its calls is checked for side effects. The generated code is made the first time it is asked for.
+    private sealed class ForTable(IlNode owner, IReadOnlyDictionary<string, Rule> rules)
     {
-        public readonly IReadOnlyDictionary<string, Rule> Rules = rules;
-        public readonly bool EffectFree = effectFree;
-    }
+        private readonly IlFn?[] code = new IlFn?[2];
 
-    private Calls? calls;
+        public IlFn Get(bool buffered)
+        {
+            var i = buffered ? 1 : 0;
+            return code[i] ??= Make(buffered);
+        }
+
+        private IlFn Make(bool buffered)
+        {
+            var inlined = IlCompiler.InlineCalls(owner.rule, rules, buffered);
+            var calls = IlCompiler.CallsIn(inlined);
+            return IlCompiler.Compile(inlined, buffered, calls.Length > 0 && IlCompiler.EffectFree(rules, calls));
+        }
+    }
 
     /// <summary>True when this rule always reads the engine's edit buffer, which is the case for any rule that edits.</summary>
     public readonly bool Buffered;
 
     // pure when nothing in the rule breaks, keeps, edits or refers to other rules, as with the interpreter's nodes
-    public IlNode(Rule rule, IlFn fn, bool pure, bool buffered, string[] refs)
+    public IlNode(Rule rule, IlFn fn, bool pure, bool buffered, bool hasCalls)
     {
         this.rule = rule;
-        this.refs = refs;
+        this.hasCalls = hasCalls;
         Pure = pure;
         Buffered = buffered;
-        variants[buffered ? 2 : 0] = fn;
+        if (!hasCalls) standalone[buffered ? 1 : 0] = fn;
     }
 
     /// <summary>
-    /// The generated code to run. It reads the string or the edit buffer, and when every rule this one calls is free of
-    /// side effects (no break, keep or edit anywhere beneath it) it skips the bookkeeping those would need. Variants
-    /// are made the first time they are asked for.
+    /// The generated code to run. It reads the string or the edit buffer. For a rule that calls others it is made for the
+    /// rule table in use: small non-recursive rules are written into it, and when nothing it still calls can break, keep
+    /// or edit it skips the bookkeeping those would need.
     /// </summary>
     public IlFn Pick(TextEngine e, bool buffered)
     {
         buffered |= Buffered;
-        var free = refs.Length > 0 && CallsAreEffectFree(e);
-        var i = (buffered ? 2 : 0) + (free ? 1 : 0);
-        return variants[i] ??= IlCompiler.Compile(rule, buffered, free);
-    }
-
-    private bool CallsAreEffectFree(TextEngine e)
-    {
+        if (!hasCalls) return standalone[buffered ? 1 : 0] ??= IlCompiler.Compile(rule, buffered, refsEffectFree: false);
         var rules = e.Ctx.Rules;
-        var c = calls;
-        if (c == null || !ReferenceEquals(c.Rules, rules)) calls = c = new Calls(rules, IlCompiler.EffectFree(rules, refs));
-        return c.EffectFree;
+        if (!tables.TryGetValue(rules, out var forTable)) tables.AddOrUpdate(rules, forTable = new ForTable(this, rules));
+        return forTable.Get(buffered);
     }
 
     public override bool Match(TextEngine e, ref ReadOnlySpan<char> text, ref int pos)
@@ -325,12 +331,86 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
         if (!Supports(rule)) return null;
         // a rule that edits reads the engine's buffer, since the string no longer matches the text after an edit
         buffered |= Parts(rule).Any(r => r is Insert or Change or Remove);
-        var refs = Parts(rule).OfType<Ref>().Select(r => r.Name).Distinct().ToArray();
-        return new IlNode(rule, Compile(rule, buffered, refsEffectFree: false), IsPure(rule, false), buffered, refs);
+        var hasCalls = Parts(rule).Any(r => r is Ref);
+        return new IlNode(rule, Compile(rule, buffered, refsEffectFree: false), IsPure(rule, false), buffered, hasCalls);
     }
 
     /// <summary>Generate code for a rule. <paramref name="refsEffectFree"/> says the rules it calls never break, keep or edit.</summary>
     public static IlFn Compile(Rule rule, bool buffered, bool refsEffectFree) => new Gen(buffered, refsEffectFree).Build(rule);
+
+    /// <summary>The names of the rules a rule calls.</summary>
+    public static string[] CallsIn(Rule rule) => Parts(rule).OfType<Ref>().Select(r => r.Name).Distinct().ToArray();
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IReadOnlyDictionary<string, Rule>, HashSet<string>> RecursiveRules = new();
+
+    // the rules that can reach themselves through the rules they call
+    private static HashSet<string> Recursive(IReadOnlyDictionary<string, Rule> rules) => RecursiveRules.GetValue(rules, table =>
+    {
+        var calls = table.ToDictionary(kv => kv.Key, kv => CallsIn(kv.Value));
+        var found = new HashSet<string>();
+        foreach (var name in table.Keys)
+        {
+            var seen = new HashSet<string>();
+            var todo = new Stack<string>(calls[name]);
+            while (todo.Count > 0)
+            {
+                var next = todo.Pop();
+                if (next == name) { found.Add(name); break; }
+                if (seen.Add(next) && calls.TryGetValue(next, out var onward))
+                    foreach (var n in onward) todo.Push(n);
+            }
+        }
+        return found;
+    });
+
+    private const int InlineLimit = 64;     // the most nodes a rule can have to be written into another
+    private const int InlineBudget = 256;   // the most nodes written into one rule in all
+
+    /// <summary>
+    /// Replace calls to small rules that do not call themselves, directly or through others, with the rules themselves, so
+    /// the generated code has no call to make. Which rule a name means depends on the table, so this is done per table.
+    /// </summary>
+    public static Rule InlineCalls(Rule rule, IReadOnlyDictionary<string, Rule> rules, bool buffered)
+    {
+        var recursive = Recursive(rules);
+        var editing = buffered ? new HashSet<string>() : RulesReachingEdits(rules);   // text that is edited cannot be followed from a string
+        var budget = InlineBudget;
+
+        Rule Visit(Rule r) => r switch
+        {
+            Ref call when CanInline(call.Name, out var body) => Visit(body),
+            Seq s => new Seq([.. s.Items.Select(Visit)]),
+            Alt a => new Alt([.. a.Items.Select(Visit)]),
+            Repeat x => x with { Body = Visit(x.Body) },
+            Ahead x => x with { Body = Visit(x.Body) },
+            Not x => x with { Body = Visit(x.Body) },
+            To x => x with { Body = Visit(x.Body) },
+            Thru x => x with { Body = Visit(x.Body) },
+            Copy x => x with { Body = Visit(x.Body) },
+            Set x => x with { Body = Visit(x.Body) },
+            Collect x => x with { Body = Visit(x.Body) },
+            Keep x => x with { Body = Visit(x.Body) },
+            KeepPick x => x with { Body = Visit(x.Body) },
+            Change x => x with { Body = Visit(x.Body) },
+            Remove x => x with { Body = Visit(x.Body) },
+            CompiledRule x => Visit(x.Body),
+            _ => r,
+        };
+
+        bool CanInline(string name, out Rule body)
+        {
+            body = null!;
+            if (!rules.TryGetValue(name, out var found) || recursive.Contains(name) || editing.Contains(name)) return false;
+            var unwrapped = Unwrap(found);
+            var size = Parts(unwrapped).Count();
+            if (size > InlineLimit || size > budget || !Supports(unwrapped)) return false;
+            budget -= size;
+            body = unwrapped;
+            return true;
+        }
+
+        return Visit(rule);
+    }
 
     private static bool IsEffect(Rule rule) =>
         rule is BreakRule or RejectRule or Keep or KeepPick or KeepValue or Insert or Change or Remove;
@@ -385,7 +465,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
         return reaching;
     }
 
-    /// <summary>The rule and every rule inside it, in order, produced lazily. The bodies of edits are not visited: callers stop at the edit itself.</summary>
+    /// <summary>The rule and every rule inside it, in order, produced lazily.</summary>
     private static IEnumerable<Rule> Parts(Rule rule)
     {
         yield return rule;
@@ -403,6 +483,8 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
             Collect c => [c.Body],
             Keep k => [k.Body],
             KeepPick k => [k.Body],
+            Change c => [c.Body],
+            Remove r => [r.Body],
             CompiledRule c => [c.Body],
             _ => Array.Empty<Rule>(),
         };
