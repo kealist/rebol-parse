@@ -4,11 +4,16 @@ namespace RebolParse.Tests;
 
 public class AllocationTests
 {
-    /// <summary>Bytes allocated per call on this thread, after warm-up so one-time pooling and JIT are excluded.</summary>
+    /// <summary>
+    /// Bytes allocated per call on this thread, after warm-up so one-time pooling and JIT are excluded. The count is
+    /// averaged over many calls because the runtime's per-thread figure can move by a few kilobytes for reasons that have
+    /// nothing to do with the code (it did on a CI runner: 2 bytes a call over 1,000 calls); the smallest real allocation
+    /// is 24 bytes a call, which stays far above that over this many.
+    /// </summary>
     private static long BytesPerCall(Action call)
     {
-        for (var i = 0; i < 300; i++) call();
-        const int runs = 1000;
+        for (var i = 0; i < 1000; i++) call();
+        const int runs = 50_000;
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < runs; i++) call();
         return (GC.GetAllocatedBytesForCurrentThread() - before) / runs;
