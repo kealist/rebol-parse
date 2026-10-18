@@ -124,6 +124,12 @@ public static class P
     /// <summary>Matches one character that appears in <paramref name="chars"/>.</summary>
     public static Rule CharIn(string chars) => CharIf(chars.Contains, $"[{chars}]");
 
+    /// <summary>
+    /// Matches one character from a set written like a regex class: <c>Chars("a-zA-Z_")</c>. A <c>-</c> between
+    /// two characters is a range; first or last it is a hyphen. In rule text this is <c>charset "a-zA-Z_"</c>.
+    /// </summary>
+    public static Rule Chars(string spec) => CharIf(CharSet.Parse(spec).Contains, $"charset \"{spec}\"");
+
     /// <summary>Matches one character from <paramref name="lo"/> to <paramref name="hi"/>, inclusive.</summary>
     public static Rule CharRange(char lo, char hi) => CharIf(c => c >= lo && c <= hi, $"{lo}-{hi}");
 

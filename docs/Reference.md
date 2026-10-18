@@ -17,13 +17,41 @@ Rules are read by `Dialect.Read(text, actions, values)`. Whitespace separates it
 | `[ ... ]` | group items; the outer brackets of a whole rule are optional |
 | `a \| b` | ordered choice, lowest precedence: `a b \| c` is `(a b) \| c` |
 | `(@name)` | call the action `name` |
+| `charset "a-z_"` | one character from a set (see below) |
 | `; ...` | a comment, to the end of the line |
+
+**Character sets.** `charset "..."` takes a string written like the inside of a regex class. A `-` between two characters makes a range (`a-z`, `0-9a-fA-F`); a `-` first or last is just a hyphen (`-+*/`). A range must not run backwards: `+-*/` is an error because `+` comes after `*`, so write `-+*/`. In a charset string, `^-` still means a tab, so put the hyphen first or last instead. Sets are case-sensitive even under `ignoreCase`, and are tested without allocating (a bit test for ASCII).
+
+**Grammars.** `Dialect.ReadGrammar(text)` reads several rules at once, written as `name = rule`. The `=` must be its own word, and a definition runs until the next `name =` at the top level, so a rule can span lines and contain groups and comments. It returns the rule table to pass to `Parse`. It is an error for a grammar to have text before its first definition, an empty definition, or two definitions with one name.
+
+```
+expr   = term any [charset "+-" term]
+term   = factor any [charset "*/" factor]
+factor = some digit | "(" expr ")"
+```
 
 **Escapes** in strings and chars use REBOL's caret: `^/` newline, `^-` tab, `^"` a quote, `^^` a caret. Any other `^x` is just `x`. So `#"^""` matches a double quote.
 
 **Keywords and built-ins** are case-insensitive in rule text (`SOME Digit` works). Variable names and mark names are case-sensitive, and so are rule names in `Ref` lookups unless the dictionary you pass was built with a case-insensitive comparer.
 
 **Paren code is never evaluated.** `(print 1)` is an error; only `(@name)` is allowed, bound to a C# delegate you pass in. This makes it safe to read rules from untrusted text.
+
+## Fluent operators and chained forms
+
+The fluent API has the same rules as the text, plus operator and chained shorthands that build exactly the same trees:
+
+| | |
+|---|---|
+| `a + b`, `a \| b` | sequence, ordered choice (flattened: `a + b + c` is one sequence of three) |
+| `+r`, `!r`, `r * n`, `n * r` | `some`, `not`, exactly `n` times |
+| `r.Some()` `.Any()` `.Opt()` `.Times(n)` `.Times(min, max)` | repeats |
+| `r.Not()` `.Ahead()` `.To()` `.Thru()` `.Into()` | lookahead, scans, `into` |
+| `r.Copy("v")` `.Set("v")` `.Keep()` | captures and `collect` |
+| `r.ChangeTo(v)` `.Remove()` | edits |
+| `r.Then(action)` | the rule, then an action |
+| `rule.IsMatch(input)` `rule.Parse(input)` | the same as the `Parser` methods, with the rule first |
+
+As always with C# operators, one operand of `+` or `\|` must already be a `Rule`: `"a" + "b"` is a string. Use `Seq` and `Choice` to combine plain strings.
 
 ## Keywords
 

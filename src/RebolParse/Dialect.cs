@@ -47,6 +47,51 @@ public static class Dialect
         IReadOnlyDictionary<string, Func<Ctx, object?>>? values = null) =>
         defs.ToDictionary(d => d.Key, d => Read(d.Value, actions, values));
 
+    /// <summary>
+    /// Read a whole grammar written as <c>name = rule</c> definitions, so a recursive grammar needs no dictionary of
+    /// strings. A definition runs until the next <c>name =</c> (the <c>=</c> must be its own word), so rules can span lines:
+    /// <code>
+    /// group = "(" any item ")"
+    /// item  = some alpha | group
+    /// </code>
+    /// Pass the result as the <c>rules</c> argument of <c>Parse</c> and start from <c>Ref("group")</c>.
+    /// </summary>
+    /// <param name="text">The grammar.</param>
+    /// <param name="actions">Named actions for <c>(@name)</c>.</param>
+    /// <param name="values">Named value functions for <c>keep (@name)</c> and <c>if (@name)</c>.</param>
+    /// <exception cref="FormatException">Text before the first definition, a duplicate or empty definition, or a malformed rule.</exception>
+    public static Dictionary<string, Rule> ReadGrammar(string text, IReadOnlyDictionary<string, Action<Ctx>>? actions = null,
+        IReadOnlyDictionary<string, Func<Ctx, object?>>? values = null)
+    {
+        var bindings = new Bindings(actions, values);
+        var tokens = Tokenize(text);
+        var starts = new List<int>();
+        var depth = 0;
+        for (var k = 0; k < tokens.Count; k++)
+        {
+            if (tokens[k].Kind == K.Open) depth++;
+            else if (tokens[k].Kind == K.Close) depth--;
+            else if (depth == 0 && tokens[k].Kind == K.Word && k + 1 < tokens.Count
+                     && tokens[k + 1] is { Kind: K.Word, Text: "=" })
+                starts.Add(k);
+        }
+        if (starts.Count == 0 || starts[0] != 0)
+            throw new FormatException("A grammar is a series of 'name = rule' definitions.");
+
+        var rules = new Dictionary<string, Rule>();
+        for (var d = 0; d < starts.Count; d++)
+        {
+            var name = tokens[starts[d]].Text;
+            var end = d + 1 < starts.Count ? starts[d + 1] : tokens.Count;
+            var body = tokens.GetRange(starts[d] + 2, end - starts[d] - 2);
+            if (body.Count == 0) throw new FormatException($"Rule '{name}' is empty.");
+            if (rules.ContainsKey(name)) throw new FormatException($"Rule '{name}' is defined twice.");
+            var i = 0;
+            rules[name] = ReadAlt(body, ref i, bindings, closer: null);
+        }
+        return rules;
+    }
+
     // ---- Reader ----
 
     private static Rule ReadAlt(List<Token> t, ref int i, Bindings acts, string? closer)
@@ -114,6 +159,9 @@ public static class Dialect
             case "quote": return ReadQuoted(t, ref i);
             case "copy": return new Copy(ReadVarName(t, ref i, "copy"), ReadItem(t, ref i, acts));
             case "set": return new Set(ReadVarName(t, ref i, "set"), ReadItem(t, ref i, acts));
+            case "charset":
+                if (i >= t.Count || t[i].Kind != K.Str) throw new FormatException("'charset' needs a string like \"a-z0-9_\".");
+                return P.Chars(t[i++].Text);
             case "insert": return new Insert(ReadValue(t, ref i, "insert"));
             case "remove": return new Remove(ReadItem(t, ref i, acts));
             case "keep":

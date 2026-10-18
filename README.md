@@ -76,12 +76,49 @@ var sum = Dialect.Read("any [copy n some digit (@add) opt \",\"]",
 Parser.Parse("1,2,30", sum);   // total == 33
 ```
 
+**Write grammars as grammars.** `ReadGrammar` takes `name = rule` definitions, so a recursive grammar is one block of text. `charset` spells out a set of characters the way a regex class does.
+
+```csharp
+var rules = Dialect.ReadGrammar("""
+    expr   = term any [charset "+-" term]
+    term   = factor any [charset "*/" factor]
+    factor = some digit | "(" expr ")"
+    """);
+Ref("expr").IsMatch("2*(3+(4-1))", rules);   // true
+```
+
 **Match structured data.** Give `Parse` a list instead of a string and rules match items, by value or by type; `into` descends into nested lists.
 
 ```csharp
 var command = Dialect.Read("[quote add integer! integer!] | [quote say string!]");
 Parser.IsMatch(new List<object> { new Word("add"), 1, 2 }, command);   // true
 ```
+
+## Fluent sugar
+
+With `using static RebolParse.P;`, rules can be built with operators and read left to right:
+
+```csharp
+var phone = Digit * 3 + "-" + Digit * 4;                  // 3 digit "-" 4 digit
+var ident = Chars("a-zA-Z_") + Chars("a-zA-Z0-9_").Any(); // charset "a-zA-Z_" any charset "a-zA-Z0-9_"
+var pair  = Alpha.Some().Copy("key") + "=" + (+Digit).Copy("value");
+
+phone.IsMatch("555-1234");                // rules have IsMatch and Parse of their own
+pair.Parse("width=640").Vars["value"];    // "640"
+```
+
+| Sugar | Same as |
+|---|---|
+| `+r` | `Some(r)` |
+| `!r` | `Not(r)` |
+| `r * 3`, `3 * r` | `Rep(3, r)` |
+| `r.Some()` `.Any()` `.Opt()` `.Times(n)` `.Times(min, max)` | `Some(r)` `Any(r)` `Opt(r)` `Rep(n, r)` `Rep(min, max, r)` |
+| `r.Not()` `.Ahead()` `.To()` `.Thru()` `.Into()` | `Not(r)` `Ahead(r)` `To(r)` `Thru(r)` `Into(r)` |
+| `r.Copy("v")` `.Set("v")` `.Keep()` | `Copy("v", r)` `Set("v", r)` `Keep(r)` |
+| `r.ChangeTo(v)` `.Remove()` | `Change(r, v)` `Remove(r)` |
+| `r.Then(action)` | `r + Do(action)` |
+| `Chars("a-z_")` | `CharIf` over a regex-style class; `charset "a-z_"` in text |
+| `rule.IsMatch(input)` `rule.Parse(input)` | `Parser.IsMatch(input, rule)` `Parser.Parse(input, rule)` |
 
 ## Semantics at a glance
 
@@ -130,6 +167,7 @@ REBOL keywords, and the matching fluent builder from `using static RebolParse.P;
 | `if (@fn)` | `If(ctx => bool)` | succeed, consuming nothing, when the condition holds |
 | `(@name)` | `Do(ctx => ...)` | run a C# action |
 | `digit alpha alnum upper lower space newline tab` | `Digit` ... | character classes (text) |
+| `charset "a-zA-Z_"` | `Chars("a-zA-Z_")` | a custom class; `-` between two characters is a range |
 | `integer! decimal! string! word! block!` | `Integer` ... | datatypes (lists) |
 | bare word | `Ref("name")` | a named rule from the rule table passed to `Parse` |
 

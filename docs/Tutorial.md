@@ -151,13 +151,14 @@ var rules = Dialect.ReadRules(new Dictionary<string, string>
 Parser.Parse("12*3", Ref("calc"), rules).Matched;   // true
 ```
 
-Names let you reuse pieces and, in lesson 9, recurse. The text dialect has no character-set literal, so a set of characters is either a choice of strings, or `CharIn("+-*/")` from the fluent side.
+Names let you reuse pieces and, in lesson 9, recurse. A set of characters is written `charset "..."` in the text, with ranges like a regex class: `charset "a-zA-Z_"`. A `-` between two characters is a range, and first or last it is a hyphen. From the fluent side the same thing is `Chars("a-zA-Z_")`, and `CharIn("+-*/")` takes the characters literally.
 
 ### Exercises
 
 1. An identifier: a letter followed by any letters or digits. Accept `x`, `abc9`, `R2D2`. Reject `9a`, the empty string, `a-b`.
 2. An optionally signed integer. Accept `5`, `+5`, `-120`. Reject `+`, `5-`, the empty string.
 3. Using a rule table, write `calc` so `12*3` matches and `12^3` does not. Then write the same thing fluently with `CharIn`.
+4. A hex colour: `#` followed by exactly six hexadecimal digits, with a `charset`. Accept `#00ff7A`. Reject `#00ff7G`, `#00ff7`.
 
 <details><summary>Solutions</summary>
 
@@ -167,6 +168,8 @@ opt ["+" | "-"] some digit
 ```
 
 For 3, see the table above. The fluent version is `Some(Digit) + CharIn("+-*/") + Some(Digit)`.
+
+For 4: `"#" 6 charset "0-9a-fA-F"`.
 
 </details>
 

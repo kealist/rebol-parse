@@ -74,6 +74,8 @@ public class TutorialTests
         Assert.False(Parser.Parse("12^3", Ref("calc"), rules).Matched);
         var fluent = Some(Digit) + CharIn("+-*/") + Some(Digit);
         Assert.True(Parser.Parse("12*3", fluent).Matched);
+
+        Check("\"#\" 6 charset \"0-9a-fA-F\"", ["#00ff7A"], ["#00ff7G", "#00ff7", "00ff7A"]);
     }
 
     // ---- 5 to / thru / not / ahead ----

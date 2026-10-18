@@ -125,4 +125,23 @@ public class DocsExamplesTests
         Assert.Throws<FormatException>(() => Dialect.Read("(print 1)"));
         Assert.Throws<FormatException>(() => Dialect.Read("#\"ab\""));
     }
+
+    [Fact]
+    public void Readme_sugar_and_grammar_examples()
+    {
+        var phone = Digit * 3 + "-" + Digit * 4;
+        Assert.True(phone.IsMatch("555-1234"));
+        var ident = Chars("a-zA-Z_") + Chars("a-zA-Z0-9_").Any();
+        Assert.True(ident.IsMatch("snake_9"));
+        var pair = Alpha.Some().Copy("key") + "=" + (+Digit).Copy("value");
+        Assert.Equal("640", pair.Parse("width=640").Vars["value"]);
+
+        var rules = Dialect.ReadGrammar("""
+            expr   = term any [charset "+-" term]
+            term   = factor any [charset "*/" factor]
+            factor = some digit | "(" expr ")"
+            """);
+        Assert.True(Ref("expr").IsMatch("2*(3+(4-1))", rules));
+        Assert.False(Ref("expr").IsMatch("2*(3+", rules));
+    }
 }

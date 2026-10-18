@@ -13,6 +13,34 @@ public abstract record Rule
     /// <summary>Ordered choice: <c>a | b</c> tries <c>a</c>, then <c>b</c> if <c>a</c> fails. The first alternative that matches wins; later ones are not tried unless something after the choice fails and backtracks into it.</summary>
     public static Rule operator |(Rule a, Rule b) => new Alt(Flatten<Alt>(a, b, x => x.Items));
 
+    /// <summary>One or more: <c>+Digit</c> is <c>some digit</c>.</summary>
+    public static Rule operator +(Rule r) => new Repeat(r, 1, -1);
+
+    /// <summary>Negation: <c>!Digit</c> is <c>not digit</c>, which succeeds without consuming when the rule does not match.</summary>
+    public static Rule operator !(Rule r) => new Not(r);
+
+    /// <summary>Exactly <paramref name="n"/> times: <c>Digit * 3</c> is <c>3 digit</c>.</summary>
+    public static Rule operator *(Rule r, int n) => new Repeat(r, n, n);
+
+    /// <summary>Exactly <paramref name="n"/> times, written as in REBOL: <c>3 * Digit</c> is <c>3 digit</c>.</summary>
+    public static Rule operator *(int n, Rule r) => new Repeat(r, n, n);
+
+    /// <summary>Does this rule match <paramref name="input"/>? Shorthand for <see cref="Parser.IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/>; allocates nothing.</summary>
+    public bool IsMatch(string input, IReadOnlyDictionary<string, Rule>? rules = null, bool partial = false, bool ignoreCase = false) =>
+        Parser.IsMatch(input, this, rules, partial, ignoreCase);
+
+    /// <summary>Does this rule match <paramref name="input"/>? Shorthand for <see cref="Parser.IsMatch(IReadOnlyList{object}, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/>.</summary>
+    public bool IsMatch(IReadOnlyList<object> input, IReadOnlyDictionary<string, Rule>? rules = null, bool partial = false, bool ignoreCase = false) =>
+        Parser.IsMatch(input, this, rules, partial, ignoreCase);
+
+    /// <summary>Parse <paramref name="input"/> with this rule. Shorthand for <see cref="Parser.Parse(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/>.</summary>
+    public ParseResult Parse(string input, IReadOnlyDictionary<string, Rule>? rules = null, bool partial = false, bool ignoreCase = false) =>
+        Parser.Parse(input, this, rules, partial, ignoreCase);
+
+    /// <summary>Parse a list with this rule. Shorthand for <see cref="Parser.Parse(IReadOnlyList{object}, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/>.</summary>
+    public ParseResult Parse(IReadOnlyList<object> input, IReadOnlyDictionary<string, Rule>? rules = null, bool partial = false, bool ignoreCase = false) =>
+        Parser.Parse(input, this, rules, partial, ignoreCase);
+
     /// <summary>A character becomes a literal rule matching that character.</summary>
     public static implicit operator Rule(char c) => new Lit(c);
 
