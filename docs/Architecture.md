@@ -16,7 +16,7 @@ A **rule** is a tree of immutable records (`Rule.cs`). The text reader and the f
 | Input | Engine | Where | Used when |
 |---|---|---|---|
 | `string` | compiled **nodes** over a `ReadOnlySpan<char>` | `Compiled.cs` | the default for text |
-| `string` | **IL** generated with expression trees | `IlCompiler.cs` | the rule was wrapped by `.Compiled()` and uses only the supported subset |
+| `string` | **IL** generated with expression trees | `IlCompiler.cs` | the rule was wrapped by `.Compiled()` (every keyword compiles for text) |
 | `IReadOnlyList<object>` | tree-walking **interpreter** over `ISeries` | `Matcher.cs`, `Series.cs` | all block input |
 
 All three must agree on every answer. The tests exist to hold them to that (see [Testing](#testing)).
@@ -92,17 +92,21 @@ Block input does not use nodes. `Matcher` walks the rule tree directly against a
 
 ## The IL back end
 
-`rule.Compiled()` wraps a rule in `CompiledRule`. When `Compiler.Compile` meets one, it asks `IlCompiler.TryCompile` for a delegate and falls back to compiling the body as ordinary nodes if the rule uses something unsupported, so asking for IL can never change an answer.
+`rule.Compiled()` wraps a rule in `CompiledRule`. When `Compiler.Compile` meets one, it asks `IlCompiler.TryCompile` for a delegate. Every rule kind compiles for text; a rule type the engine does not know falls back to the node compiler, which rejects it as it would without `Compiled()`. Block input never reaches the IL compiler.
 
 **Why expression trees.** They are compiled to IL by the framework, are far easier to build and debug than raw `ILGenerator` code, and have no verification traps. The cost is that expression trees cannot hold `ReadOnlySpan<char>`, so generated code works on a `string` and an `int` offset and calls small static helpers (`IlRuntime`) for anything vectorized.
 
 **The delegate.** `int Fn(string text, int start, TextEngine e)` returns the position after the match, or -1. Each rule kind is emitted inline into one method: a sequence is straight-line code, and a choice, loop, lookahead or scan owns a saved position that it restores on failure. The generator's contract mirrors the node contract in reverse: code for a rule *jumps to a `fail` label* when it cannot match, leaving `pos` unspecified, and whoever backtracks restores it. Character tests become direct calls when the delegate points at an ordinary public method (`char.IsAsciiDigit`, `CharSet.Contains`), and go through the delegate otherwise.
 
-**Supported subset.** Literals, sequence, choice, repeats, `not`, `ahead`, `to`, `thru`, `skip`, `end`, `fail`, classes, `copy`, `set`, marks, actions, `if` and named rules. Not supported: `break`, `reject`, `collect`, `keep`, and the three edits, because they depend on engine state (flags, the collect list, the gap buffer) the generated code does not keep. This is also why a compiled rule is `Pure` from the engine's point of view and is refused if the text has already been edited.
+**Bookkeeping that matches the node engine.** The node engine's `Try` undoes a failed attempt's effect on the `break`/`reject` flags and the `collect` list. The generated code does the same, with a snapshot (`IlRuntime.Snap`) taken before, and a restore after, each attempt that can break, reject or keep: a choice alternative, a loop iteration, `not`, and each position of a scan. It is skipped for attempts the generator can tell are pure, by the same definition as `Node.Pure`, and it is not needed for `ahead` or a call to another rule, whose failure always propagates to an attempt that restores. Loops that can break or reject use the same iteration protocol as `RepeatNode`: clear the flags, run the body, stop on a break, reject or no progress.
 
-**Named rules.** A `Ref` becomes a call through a `RefSite`, which looks the target up once per rule table and caches it behind an immutable holder (so concurrent use is safe). A compiled target is called directly. An interpreted target is run through its node only if it is pure; otherwise the call throws and names the rule, because running a `keep` or an edit behind generated code's back would break its assumptions.
+**Edits: the buffered variant.** A string cannot be edited cheaply, so a rule that edits is generated against the engine's gap buffer instead: `char[] buf`, an offset, and a length, with character `i` at `buf[off + i]` for any `i` at or after the gap. The generated code reloads those three after anything that can edit (an edit, a call to another rule) and calls `NeedsSettle`/`SettleNow` at the same places the node engine calls `Settle`, so a position that rewinds before an edit sees correct text. `TextEngine.EnsureBuffer` copies the input into the buffer when such a rule starts, without counting the text as edited until an edit is made, so `ParseResult.Output` is still the original string when nothing changed. A rule that does not edit reads the string directly, which is faster, and gets a buffered variant made on demand if it ever runs after another rule has edited the text (`IlNode.BufferedFn`).
 
-**What it does not do.** There is no first-character dispatch in the generated choice (it was tried and measured no better on the JSON grammar) and no inlining across `Ref`. Grammars made of many tiny rules therefore gain little: see the [benchmarks](Benchmarks.md#compiled-to-il).
+Which rules must be buffered is decided at compile time. A rule that contains an edit always is. A rule that only *calls* a rule that edits has to be as well, and that depends on the rule table, so `Compiled(table)` finds the rules that can reach an edit through `Ref`s (`IlCompiler.RulesReachingEdits`) and marks them. A rule compiled on its own that calls an editing rule throws a clear error rather than reading stale text.
+
+**Named rules.** A `Ref` becomes a call through a `RefSite`, which looks the target up once per rule table and caches it behind an immutable holder (so concurrent use is safe). A compiled target is called directly, in its buffered variant when the caller is buffered. An interpreted target is run through its node, from a span over the string or over the buffer. After a call from string-reading code, the engine is checked for edits.
+
+**What it does not do.** There is no first-character dispatch in the generated choice (it was tried and measured no better on the JSON grammar) and no inlining across `Ref`. Grammars made of many tiny rules therefore gain little: see the [benchmarks](Benchmarks.md#compiled-to-il). A buffered rule pays one copy of the input when it starts.
 
 ## Invariants worth knowing
 
@@ -122,7 +126,7 @@ Block input does not use nodes. `Matcher` walks the rule tree directly against a
 | Text vs block engines | `EngineParityTests` | the same rule rows on both engines |
 | Edits vs a plain list | `EditParityTests` | thousands of random edit rules, text engine against the list interpreter; plus deterministic rewind cases for every `Settle` |
 | Choice dispatch | `DispatchTests` | alternatives, ignore-case, non-ASCII, undefined rules, table switching |
-| Interpreter vs IL | `CompiledRuleTests` | 4,000 random rules, the parity rows, fallback cases, recursion, tables |
+| Interpreter vs IL | `CompiledRuleTests` | 4,000 random rules including edits, the parity rows, an exhaustive 400,000-case check of attempt-edit-fail shapes inside `to`, `thru`, `not`, `any` and `ahead`, recursion and rule tables |
 | Docs stay true | `TutorialTests`, `DocsExamplesTests`, `SamplesTests` | every tutorial solution and every sample demo runs as a test |
 | Allocation | `AllocationTests` | `IsMatch` stays at zero bytes |
 | Coverage | `CoverageTests` and the rest | 100% line and branch coverage of the library |
@@ -146,6 +150,6 @@ Run `dotnet test`. Benchmarks are in `benchmarks/RebolParse.Benchmarks` (`dotnet
 
 - Recursion depth is bounded by the stack, and left recursion recurses forever (documented).
 - Backtracking has no memoization, so a pathological grammar can be exponential.
-- The IL back end could gain `collect`/`keep` and `break`/`reject` by carrying the flags in locals, and could inline small non-recursive rules to help grammars of many tiny rules.
+- The IL back end could inline small non-recursive rules to help grammars of many tiny rules, and could read the original string for a buffered rule until its first edit instead of copying the input up front.
 - Block input has no compiled path.
 - A moving gap costs a tail copy whenever a rule rewinds behind an edit; a piece table would avoid that at the price of a non-contiguous text.

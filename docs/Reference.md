@@ -135,12 +135,13 @@ var rules = Dialect.ReadGrammar(grammarText).Compiled();   // every rule in the 
 Parser.IsMatch("555-1234", rule);
 ```
 
-`Compiled()` returns a rule that generates IL the first time it runs, as `RegexOptions.Compiled` does, and is then several times faster on loops and literals ([benchmarks](Benchmarks.md#compiled-to-il)). It matches exactly what the interpreter matches, down to the position and the captured values, and it is safe to call on any rule.
+`Compiled()` returns a rule that generates IL the first time it runs, as `RegexOptions.Compiled` does, and is then several times faster on loops and literals ([benchmarks](Benchmarks.md#compiled-to-il)). It matches exactly what the interpreter matches, down to the position, the captured values and the edited text.
 
-- **What compiles:** literals, sequence, choice, repeats, `not`, `ahead`, `to`, `thru`, `skip`, `end`, `fail`, character classes and sets, `copy`, `set`, marks and `:name`, `(@name)` actions, `if (@name)` and named rules.
-- **What does not:** `break`, `reject`, `collect`, `keep`, `insert`, `change` and `remove`. A rule that uses any of them runs on the interpreter. `((CompiledRule)rule).IsNative` tells you which happened.
-- **Block input** always uses the interpreter.
-- **Named rules.** For full speed compile the whole table: `rules.Compiled()` returns a copy with every rule compiled. A compiled rule may call an uncompiled one only if that rule is plain matching (no `Ref`, no edits, no `keep`); otherwise it throws `InvalidOperationException` with the rule's name.
+- **What compiles:** every keyword, for string input. That includes `copy`, `set`, `collect`/`keep`, `break`/`reject`, `insert`/`change`/`remove`, marks, actions, `if` and named rules.
+- **Block input** always uses the interpreter, so `Compiled()` is harmless there and changes nothing. `((CompiledRule)rule).IsNative` is `true` when a rule runs as IL.
+- **Named rules.** Compile the whole table: `rules.Compiled()` returns a copy with every rule compiled, and works out which of them can reach an edit so they read the edited text correctly. A compiled rule may also call an uncompiled one, and an uncompiled rule may call a compiled one, in either case at interpreter speed for that call.
+- **One restriction.** A compiled rule that does not edit, and was compiled on its own, cannot call a compiled rule that does: it reads the original string, and the edit leaves it stale. This throws `InvalidOperationException` and says what to do. Compile the table with `rules.Compiled()` (or leave the caller uncompiled) and it works.
+- **Edits.** A rule that edits is generated against the same gap buffer the interpreter uses, so the edits are linear in the same way. It copies the input into that buffer when it starts, so `IsMatch` allocates for it.
 - **Cost.** The first compile in a process takes about 30 ms; after that a small rule takes under a millisecond. Compile rules you run many times, and build them once.
 
 ## Limits

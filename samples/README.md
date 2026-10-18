@@ -24,6 +24,6 @@ dotnet run -c Release --project samples/Samples -- clean   # timings are only me
 
 - **Rules decide, actions do.** Keep the grammar free of logic and let `(@name)` actions collect values. Actions run as soon as their piece matches, so put them after the part that can fail.
 - **Backtracking does not undo actions.** Every demo relies on grammars where a branch only fires an action once it can no longer fail, or where a failure means the whole input is rejected anyway. See [what is undone](../docs/Reference.md#what-is-undone-when-a-branch-fails).
-- **Build rules once.** Each demo reads its grammar in the constructor and reuses it, so the rule compiles one time.
+- **Build rules once.** Each demo reads its grammar in the constructor and reuses it, so the rule compiles one time. Seven of the eight also call `.Compiled()` on the grammar, which generates IL the first time it runs. The `clean` demo, which edits a few megabytes of text, takes about 110 ms that way and about 310 ms interpreted. The `robot` demo works on lists, which always use the interpreter.
 - **Locate errors with a partial parse.** When a full parse fails, `Parser.Parse(text, rule, partial: true).Position` is how far a valid prefix went.
 - **Capture variables are shared.** `copy x` writes into one table for the whole parse, so read the value in an action right away, as the calculator and JSON demos do, rather than after a nested rule might have set it again.

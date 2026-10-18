@@ -571,15 +571,15 @@ var rules = Dialect.ReadGrammar("group = \"(\" any group \")\"").Compiled();
 Parser.Parse("(()())", Ref("group"), rules).Matched;   // true
 ```
 
-Not every rule can become IL. `break`, `reject`, `collect`, `keep`, `insert`, `change` and `remove` stay on the interpreter. Asking for `.Compiled()` on such a rule is harmless: it runs on the interpreter and gives the same answer, and `IsNative` is `false`. Block input always uses the interpreter.
+Every keyword compiles, including `collect`/`keep`, `break`/`reject` and the edits `insert`, `change` and `remove`. Block input always uses the interpreter, so `.Compiled()` on a rule for blocks is harmless and changes nothing.
 
-Edits are already fast without compiling. `any [remove some digit | skip]` over a megabyte of text takes about a millisecond, because the engine keeps the text in a buffer with a gap instead of shifting it on every removal.
+Edits are fast even without compiling. `any [remove some digit | skip]` over a megabyte of text takes about a millisecond, because the engine keeps the text in a buffer with a gap instead of shifting it on every removal.
 
 ### Exercises
 
 1. Compile `some digit any ["," some digit]` and check that it matches `1,22,333` and rejects `1,,2`, and that `IsNative` is `true`.
 2. Compile the table from lesson 9 (balanced parentheses) and check `(()())` and `(()`.
-3. Which of these are native: `some alpha`, `any [remove digit | skip]`, `copy w some alpha`, `collect o some [keep alpha]`? Check with `IsNative`.
+3. Compile `any [remove some digit | skip]` and strip the digits from `a1b22c`. Check that `IsNative` is `true`.
 
 <details><summary>Solutions</summary>
 
@@ -592,7 +592,7 @@ Parser.IsMatch("1,,2", list);       // false
 
 For 2, `Dialect.ReadGrammar("group = \"(\" any group \")\"").Compiled()` and parse from `Ref("group")`.
 
-For 3: `some alpha` and `copy w some alpha` are native. `any [remove digit | skip]` and `collect o some [keep alpha]` are not.
+For 3: `Parser.Parse("a1b22c", Dialect.Read("any [remove some digit | skip]").Compiled()).Output` is `"abc"`.
 
 </details>
 

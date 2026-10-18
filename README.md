@@ -153,7 +153,7 @@ Parser.IsMatch("555-1234", Phone);      // 10 ns, against 30 ns interpreted and 
 var rules = Dialect.ReadGrammar(grammar).Compiled();   // compile every rule in a table
 ```
 
-Compile once and reuse; the first compile in a process takes about 30 ms. Rules that use `break`, `reject`, `collect`, `keep` or an edit run on the interpreter automatically, so `.Compiled()` is always safe. See [Compiling to IL](docs/Reference.md#compiling-to-il) for the details.
+Compile once and reuse; the first compile in a process takes about 30 ms. Every keyword compiles for text, including `collect`/`keep` and the edits; block input uses the interpreter, so `.Compiled()` is always safe. See [Compiling to IL](docs/Reference.md#compiling-to-il) for the details.
 
 ## Semantics at a glance
 
