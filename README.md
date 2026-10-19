@@ -1,5 +1,11 @@
 # RebolParse
 
+[![NuGet](https://img.shields.io/nuget/v/RebolParse.svg)](https://www.nuget.org/packages/RebolParse)
+[![Downloads](https://img.shields.io/nuget/dt/RebolParse.svg)](https://www.nuget.org/packages/RebolParse)
+[![build](https://github.com/kealist/rebol-parse/actions/workflows/build.yml/badge.svg)](https://github.com/kealist/rebol-parse/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/github/license/kealist/rebol-parse.svg)](LICENSE)
+![.NET](https://img.shields.io/badge/.NET-net10.0%20%7C%20netstandard2.0-512BD4)
+
 [REBOL's `parse` dialect](http://www.rebol.com/docs/core23/rebolcore-15.html) for C#: a compact grammar language for matching, extracting and rewriting text and structured data. It sits between regular expressions and a full parser generator. Rules read left to right like the input they describe, they can recurse, and they run actions as they match.
 
 ## Why use it
