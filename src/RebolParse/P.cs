@@ -134,7 +134,7 @@ public static class P
     public static Rule CharRange(char lo, char hi) => CharIf(c => c >= lo && c <= hi, $"{lo}-{hi}");
 
     /// <summary>An ASCII digit, <c>0</c> to <c>9</c> (<c>digit</c>).</summary>
-    public static readonly Rule Digit = CharIf(char.IsAsciiDigit, "digit");
+    public static readonly Rule Digit = CharIf(Ascii.IsDigit, "digit");
 
     /// <summary>A letter, in any script (<c>alpha</c>).</summary>
     public static readonly Rule Alpha = CharIf(char.IsLetter, "alpha");

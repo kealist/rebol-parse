@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The same tests as RebolParse.Tests, run against the netstandard2.0 build of the library instead of the net10.0 one.
+    They still run on the current .NET runtime; what differs is the library: no SearchValues, no string.Create, and the
+    polyfilled language features.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- the samples are built against the net10.0 library, so their tests run only in the other project -->
+    <Compile Include="..\RebolParse.Tests\**\*.cs" Exclude="..\RebolParse.Tests\obj\**;..\RebolParse.Tests\bin\**;..\RebolParse.Tests\SamplesTests.cs" />
+    <ProjectReference Include="..\..\src\RebolParse\RebolParse.csproj" SetTargetFramework="TargetFramework=netstandard2.0" />
+  </ItemGroup>
+
+</Project>

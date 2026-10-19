@@ -10,5 +10,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RebolParse.Tests/RebolParse.Tests.csproj" />
+    <Project Path="tests/RebolParse.Tests.NetStandard/RebolParse.Tests.NetStandard.csproj" />
   </Folder>
 </Solution>

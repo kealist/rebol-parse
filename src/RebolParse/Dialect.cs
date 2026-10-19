@@ -300,7 +300,7 @@ public static class Dialect
             var wStart = i;
             while (i < s.Length && !char.IsWhiteSpace(s[i]) && "[]|\"();".IndexOf(s[i]) < 0) i++;
             var word = s[wStart..i];
-            if (word.All(char.IsAsciiDigit)) tokens.Add(new(K.Int, word));
+            if (word.All(Ascii.IsDigit)) tokens.Add(new(K.Int, word));
             else if (word.StartsWith(':') && word.Length > 1) tokens.Add(new(K.GetWord, word[1..]));
             else if (word.EndsWith(':') && word.Length > 1) tokens.Add(new(K.SetWord, word[..^1]));
             else tokens.Add(new(K.Word, word));

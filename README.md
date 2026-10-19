@@ -47,7 +47,7 @@ result.Vars["value"];  // "640"
 dotnet add package RebolParse
 ```
 
-Requires .NET 10.
+Targets `net10.0` and `netstandard2.0`, so it also runs on .NET Framework 4.6.1 and later, .NET Core 2.0 and later, Mono and Unity. The `net10.0` build is the fastest; the `netstandard2.0` build gives the same answers and uses the same engines, with `System.Memory` as its only dependency.
 
 ## A tour
 

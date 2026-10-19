@@ -4,6 +4,8 @@ Versions follow [semantic versioning](https://semver.org). Until 1.0 the API may
 
 ## Unreleased
 
+- The package also targets `netstandard2.0` (.NET Framework 4.6.1+, .NET Core 2.0+, Mono, Unity), with `System.Memory` as its only dependency. Same engines and results; `net10.0` keeps the vectorized `SearchValues` scans.
+
 ## 0.1.2
 
 First release on nuget.org. The tags `v0.1.0` and `v0.1.1` were cut while the release workflow was being set up and published nothing.

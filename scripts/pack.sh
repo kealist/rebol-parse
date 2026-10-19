@@ -27,13 +27,16 @@ dotnet test --nologo -v q
 
 echo "==> pack"
 rm -rf artifacts
-dotnet pack src/RebolParse -c Release --nologo -v q -o artifacts "${version_args[@]}"
+dotnet pack src/RebolParse -c Release --nologo -v q -o artifacts ${version_args[@]+"${version_args[@]}"}
 package=$(ls artifacts/*.nupkg | head -1)
 echo "    $package"
 ls artifacts
 
 echo "==> contents"
 unzip -l "$package" | awk 'NR>3 {print "    " $4}' | grep -E "lib/|README|\.nuspec|\.xml" || true
+for tfm in net10.0 netstandard2.0; do
+  unzip -l "$package" | grep -q "lib/$tfm/RebolParse.dll" || { echo "    the package has no lib/$tfm build" >&2; exit 1; }
+done
 unzip -p "$package" README.md | grep -c "github.com/kealist/rebol-parse/blob/main/" | sed 's/^/    README links pointing at GitHub: /'
 if unzip -p "$package" README.md | grep -E "\]\((docs|samples|LICENSE)" >/dev/null; then
   echo "    README still has relative links" >&2; exit 1

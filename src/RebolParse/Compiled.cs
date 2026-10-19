@@ -59,13 +59,25 @@ internal sealed class TextEngine
     /// <summary>The text after the parse: the original string when nothing was edited. Call it once, at the end: it gives the edit buffer back.</summary>
     public string Result()
     {
-        var result = !Edited ? original : string.Create(length - gapSize, this, static (dest, e) =>
+        var result = !Edited ? original : EditedText();
+        ReleaseBuffer();
+        return result;
+    }
+
+    private string EditedText()
+    {
+#if NET8_0_OR_GREATER
+        return string.Create(length - gapSize, this, static (dest, e) =>
         {
             e.buffer.AsSpan(0, e.gapStart).CopyTo(dest);
             e.buffer.AsSpan(e.gapStart + e.gapSize, e.length - e.gapStart - e.gapSize).CopyTo(dest[e.gapStart..]);
         });
-        ReleaseBuffer();
-        return result;
+#else
+        var chars = new char[length - gapSize];
+        Array.Copy(buffer!, 0, chars, 0, gapStart);
+        Array.Copy(buffer!, gapStart + gapSize, chars, gapStart, length - gapStart - gapSize);
+        return new string(chars);
+#endif
     }
 
     private void ReleaseBuffer()
@@ -575,13 +587,20 @@ internal sealed class RepeatChar(Func<char, bool> test, int min, int max) : Node
 internal sealed class StopSet
 {
     public readonly char[] Chars;
-    public readonly System.Buffers.SearchValues<char> Values;
+#if NET8_0_OR_GREATER
+    private readonly System.Buffers.SearchValues<char> values;   // vectorized search for these characters
+    public int IndexIn(ReadOnlySpan<char> span) => span.IndexOfAny(values);
+#else
+    public int IndexIn(ReadOnlySpan<char> span) => span.IndexOfAny(Chars);
+#endif
     public readonly Func<char, bool>? Test;   // character classes, when the set has any
 
     private StopSet(List<char> chars, List<Func<char, bool>> tests)
     {
         Chars = [.. chars];
-        Values = System.Buffers.SearchValues.Create(Chars);
+#if NET8_0_OR_GREATER
+        values = System.Buffers.SearchValues.Create(Chars);
+#endif
         Test = tests.Count switch { 0 => null, 1 => tests[0], _ => c => tests.Any(t => t(c)) };
     }
 
@@ -626,7 +645,7 @@ internal sealed class RepeatUntil(StopSet stop, int min, int max) : Node
         var limit = max < 0 || max > text.Length - pos ? text.Length : pos + max;
         if (stop.Test is null && !e.IgnoreCase)
         {
-            var at = text[pos..limit].IndexOfAny(stop.Values);
+            var at = stop.IndexIn(text.Slice(pos, limit - pos));
             pos = at < 0 ? limit : pos + at;
         }
         else

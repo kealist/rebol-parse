@@ -74,8 +74,7 @@ internal sealed class IlNode : Node
         buffered |= Buffered;
         if (!hasCalls) return standalone[buffered ? 1 : 0] ??= IlCompiler.Compile(rule, buffered, refsEffectFree: false);
         var rules = e.Ctx.Rules;
-        if (!tables.TryGetValue(rules, out var forTable)) tables.AddOrUpdate(rules, forTable = new ForTable(this, rules));
-        return forTable.Get(buffered);
+        return tables.GetValue(rules, table => new ForTable(this, table)).Get(buffered);
     }
 
     public override bool Match(TextEngine e, ref ReadOnlySpan<char> text, ref int pos)
@@ -805,7 +804,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
         }
 
         // ASCII digits and punctuation have no other-case spelling, so they need no ignore-case comparison
-        private static bool HasCase(char c) => c >= 128 || char.IsAsciiLetter(c);
+        private static bool HasCase(char c) => c >= 128 || Ascii.IsLetter(c);
 
         // does the character at `at` equal c, ignoring case when asked to? (the caller has checked it is in range)
         private Expression CharIs(char c, Expression at)

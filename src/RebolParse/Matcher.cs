@@ -8,7 +8,7 @@ namespace RebolParse;
 public sealed class Ctx
 {
     private static readonly Dictionary<string, Rule> NoRules = [];
-    private static readonly IReadOnlyDictionary<string, object?> NoVars = new Dictionary<string, object?>().AsReadOnly();
+    private static readonly IReadOnlyDictionary<string, object?> NoVars = new System.Collections.ObjectModel.ReadOnlyDictionary<string, object?>(new Dictionary<string, object?>());
 
     // Created on first use so a parse that never captures, marks or collects allocates none of them.
     private Dictionary<string, object?>? vars;

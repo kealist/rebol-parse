@@ -34,6 +34,7 @@ All three must agree on every answer. The tests exist to hold them to that (see 
 | `Compiled.cs` | `TextEngine`, `Compiler`, and every node class for text |
 | `IlCompiler.cs` | `CompiledRule`, the expression-tree generator, and the runtime helpers it calls |
 | `CharSet.cs` | `Chars("a-z_")` sets: a bit test for ASCII |
+| `Polyfills.cs` | What `netstandard2.0` lacks (`Index`, `Range`, `IsExternalInit`, `string.Contains(char)`, ...), compiled only for that target |
 
 ## Rules and the two readers
 
@@ -129,6 +130,7 @@ Which rules must be buffered is decided at compile time. A rule that contains an
 | Edits vs a plain list | `EditParityTests` | thousands of random edit rules, text engine against the list interpreter; plus deterministic rewind cases for every `Settle` |
 | Choice dispatch | `DispatchTests` | alternatives, ignore-case, non-ASCII, undefined rules, table switching |
 | Interpreter vs IL | `CompiledRuleTests` | 4,000 random rules including edits, the parity rows, an exhaustive 400,000-case check of attempt-edit-fail shapes inside `to`, `thru`, `not`, `any` and `ahead`, recursion and rule tables |
+| Same tests on `netstandard2.0` | `RebolParse.Tests.NetStandard` | the same test files, run against the `netstandard2.0` build of the library |
 | Docs stay true | `TutorialTests`, `DocsExamplesTests`, `SamplesTests` | every tutorial solution and every sample demo runs as a test |
 | Allocation | `AllocationTests` | `IsMatch` stays at zero bytes |
 | Coverage | `CoverageTests` and the rest | 100% line and branch coverage of the library |
