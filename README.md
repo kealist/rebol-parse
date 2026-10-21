@@ -6,30 +6,7 @@
 [![License: MIT](https://img.shields.io/github/license/kealist/rebol-parse.svg)](LICENSE)
 ![.NET](https://img.shields.io/badge/.NET-net10.0%20%7C%20netstandard2.0-512BD4)
 
-[REBOL's `parse` dialect](http://www.rebol.com/docs/core23/rebolcore-15.html) for C#: a compact grammar language for matching, extracting and rewriting text and structured data. It sits between regular expressions and a full parser generator. Rules read left to right like the input they describe, they can recurse, and they run actions as they match.
-
-## Why use it
-
-Regular expressions are fine until a pattern has to nest, capture several things, or be understood by someone else next month. The usual next step is a parser generator, which means a grammar file, a build step and a generated class. Parse fills the gap between them. A rule is a string, or a few lines of C#, that lives next to the code that uses it. It reads in the order the input is written, and it can call itself.
-
-What you get:
-
-- **Rules you can read.** `copy key some alpha "=" copy value some digit` says what it matches, in order. The regex equivalent has groups you count by index.
-- **Recursion.** Balanced brackets, nested lists and arithmetic are a rule that refers to itself. .NET regex can match balanced text only with balancing groups, which are hard to write and harder to read.
-- **Actions in the middle of a match.** `(@name)` calls a C# delegate as soon as that part matches. The calculator sample evaluates `2*(3+4)` while it parses, with no tree built first.
-- **Errors you can locate.** You can parse a file line by line, report line 14, and still load the other lines. The INI sample does this.
-- **One rule set for text and data.** The same rules match characters in a string or items in a list, including nested lists.
-- **Safe to load from outside.** Rule text can come from a config file or a user. It cannot run code. It can only call delegates you registered.
-- **Speed that is easy to check.** Interpreted, it is faster than the interpreted .NET `Regex` on most of the benchmark tasks and slower on one (bulk deletion). With `.Compiled()`, validating a phone number takes about 11 ns against 14 ns for a compiled `Regex`, and a long list of numbers about 5 times faster. The [benchmarks](docs/Benchmarks.md) show the losses too.
-- **Tested against itself.** The library has 100% line and branch coverage, and random rules are run through the string engine, the list engine and the IL compiler, which must all agree.
-
-When another tool is the better choice:
-
-- For a simple pattern, a regex is shorter and everyone already knows it.
-- To read whole JSON or XML documents quickly, use `System.Text.Json` or `System.Xml`. A parse grammar reads full JSON 3 to 5 times slower than `System.Text.Json`. It wins only when you can stop early, for example to read the first few properties of a large document.
-- Matching lists is interpreted, not compiled, so it is slower than matching text.
-- Captures, actions and edits made in a branch that later fails are not undone, as in REBOL. [The reference](docs/Reference.md#what-is-undone-when-a-branch-fails) explains how to write rules around that.
-- This is REBOL's dialect, not a complete copy. `then`, `return`, `limit` and the `only` refinements are not implemented.
+[REBOL's `parse` dialect](http://www.rebol.com/docs/core23/rebolcore-15.html) for C#. It is a small grammar language for matching, extracting and rewriting text and structured data, more capable than a regex and lighter than a parser generator.
 
 ```csharp
 using RebolParse;
@@ -42,10 +19,26 @@ result.Vars["key"];    // "width"
 result.Vars["value"];  // "640"
 ```
 
-- **Two ways to write rules, one engine.** Rule text like `some digit "." some digit`, or fluent C# like `Some(Digit) + "." + Some(Digit)`.
-- **Text and structured data.** The same rules match characters in a string or items in a list, including nested lists.
-- **Capture, collect, rewrite.** `copy`, `collect`/`keep`, and `insert`/`change`/`remove` pull data out of input or edit it as it is matched.
-- **Allocation-free validation.** `Parser.IsMatch` allocates nothing. See [Performance](#performance).
+## Why use it
+
+A regex gets hard to work with once a pattern nests or captures several things. A parser generator handles that, but brings a grammar file, a build step and generated code. With Parse, a rule is a string or a few lines of C# kept next to the code that uses it.
+
+- **Readable rules.** `copy key some alpha "=" copy value some digit` reads in the same order as the input. No numbered groups.
+- **Recursion.** A rule can refer to itself, so balanced brackets, nested lists and arithmetic are easy to express.
+- **Actions during a match.** `(@name)` calls a C# delegate when that part matches. The calculator sample evaluates `2*(3+4)` as it parses, without building a tree.
+- **Capture and rewrite.** `copy`, `collect`/`keep`, and `insert`/`change`/`remove` extract data or edit it as it is matched.
+- **Text or data.** The same rules match characters in a string or items in a list, including nested lists.
+- **Rule text or fluent C#.** Write `some digit "." some digit` or `Some(Digit) + "." + Some(Digit)`. Both run on the same engine.
+- **Safe with untrusted rules.** Rule text cannot run code. It can only call delegates you registered.
+- **Fast.** Interpreted, it beats interpreted .NET `Regex` on most benchmarks. Compiled with `.Compiled()`, it matches or beats `RegexOptions.Compiled` on all of them. `Parser.IsMatch` allocates nothing. See [Benchmarks](docs/Benchmarks.md).
+- **Well tested.** 100% line and branch coverage. Random rules run through the string engine, the list engine and the IL compiler, and all three must agree.
+
+When to use something else:
+
+- For a simple pattern, a regex is shorter and more familiar.
+- To read whole JSON or XML documents, use `System.Text.Json` or `System.Xml`. They are 2 to 8 times faster. Parse only wins when you can stop early, such as reading the first few properties of a large document.
+- Matching lists is interpreted, not compiled, so it is slower than matching text.
+- See [Differences from REBOL](#differences-from-rebol) for what is not implemented.
 
 ## Install
 
@@ -53,11 +46,11 @@ result.Vars["value"];  // "640"
 dotnet add package RebolParse
 ```
 
-Targets `net10.0` and `netstandard2.0`, so it also runs on .NET Framework 4.6.1 and later, .NET Core 2.0 and later, Mono and Unity. The `net10.0` build is the fastest; the `netstandard2.0` build gives the same answers and uses the same engines, with `System.Memory` as its only dependency.
+Targets `net10.0` and `netstandard2.0`, so it also runs on .NET Framework 4.6.1 and later, .NET Core 2.0 and later, Mono and Unity. The `net10.0` build is the fastest. The `netstandard2.0` build gives the same results and depends only on `System.Memory`.
 
 ## A tour
 
-**Validate.** `IsMatch` answers yes or no, allocation-free.
+**Validate.** `IsMatch` returns true or false and allocates nothing.
 
 ```csharp
 using RebolParse;
@@ -70,14 +63,14 @@ Parser.IsMatch("555-1234", Phone);   // true
 Parser.IsMatch("5551234", Phone);    // false
 ```
 
-**Extract.** `collect` and `keep` gather what you want from anywhere in the input.
+**Extract.** `collect` and `keep` gather matches from anywhere in the input.
 
 ```csharp
 var words = Dialect.Read("collect words any [keep some alpha | skip]");
 Parser.Parse("hello, big world!", words).Vars["words"];   // ["hello", "big", "world"]
 ```
 
-**Rewrite.** `change`, `insert` and `remove` edit as they match; the result is in `Output`, and your input is never touched.
+**Rewrite.** `change`, `insert` and `remove` edit as they match. The result is in `Output`. Your input is not modified.
 
 ```csharp
 var dashes = Dialect.Read("any [change \"-\" \"+\" | skip]");
@@ -95,7 +88,7 @@ Parser.IsMatch("(()(()))", Ref("group"), rules);   // true
 Parser.IsMatch("(()",      Ref("group"), rules);   // false
 ```
 
-**Run code.** Name an action in the rule with `(@name)` and bind it to a C# delegate.
+**Run code.** Name an action with `(@name)` and bind it to a C# delegate.
 
 ```csharp
 var total = 0;
@@ -104,7 +97,7 @@ var sum = Dialect.Read("any [copy n some digit (@add) opt \",\"]",
 Parser.Parse("1,2,30", sum);   // total == 33
 ```
 
-**Write grammars as grammars.** `ReadGrammar` takes `name = rule` definitions, so a recursive grammar is one block of text. `charset` spells out a set of characters the way a regex class does.
+**Write a grammar.** `ReadGrammar` takes `name = rule` lines, so a recursive grammar fits in one block of text. `charset` defines a set of characters, like a regex character class.
 
 ```csharp
 var rules = Dialect.ReadGrammar("""
@@ -115,7 +108,7 @@ var rules = Dialect.ReadGrammar("""
 Ref("expr").IsMatch("2*(3+(4-1))", rules);   // true
 ```
 
-**Match structured data.** Give `Parse` a list instead of a string and rules match items, by value or by type; `into` descends into nested lists.
+**Match structured data.** Pass a list instead of a string and rules match items by value or by type. `into` descends into nested lists.
 
 ```csharp
 var command = Dialect.Read("[quote add integer! integer!] | [quote say string!]");
@@ -124,7 +117,7 @@ Parser.IsMatch(new List<object> { new Word("add"), 1, 2 }, command);   // true
 
 ## Fluent sugar
 
-With `using static RebolParse.P;`, rules can be built with operators and read left to right:
+With `using static RebolParse.P;`, you can build rules with operators:
 
 ```csharp
 var phone = Digit * 3 + "-" + Digit * 4;                  // 3 digit "-" 4 digit
@@ -150,16 +143,16 @@ pair.Parse("width=640").Vars["value"];    // "640"
 
 ## Compile to IL
 
-A rule you run many times can be compiled to IL, like `RegexOptions.Compiled`. It matches exactly what the interpreter matches, only faster:
+Like `RegexOptions.Compiled`, a rule can be compiled to IL. It matches exactly what the interpreter matches, only faster:
 
 ```csharp
 static readonly Rule Phone = Dialect.Read("3 digit \"-\" 4 digit").Compiled();
-Parser.IsMatch("555-1234", Phone);      // 10 ns, against 30 ns interpreted and 14 ns for a compiled Regex
+Parser.IsMatch("555-1234", Phone);      // 11 ns, against 32 ns interpreted and 14 ns for a compiled Regex
 
 var rules = Dialect.ReadGrammar(grammar).Compiled();   // compile every rule in a table
 ```
 
-Compile once and reuse; the first compile in a process takes about 30 ms. Every keyword compiles for text, including `collect`/`keep` and the edits; block input uses the interpreter, so `.Compiled()` is always safe. See [Compiling to IL](docs/Reference.md#compiling-to-il) for the details.
+Compile once and reuse the result. The first compile in a process takes about 30 ms. Every keyword compiles for text input. List input falls back to the interpreter, so `.Compiled()` is always safe to call. See [Compiling to IL](docs/Reference.md#compiling-to-il).
 
 ## Semantics at a glance
 
@@ -167,23 +160,23 @@ Compile once and reuse; the first compile in a process takes about 30 ms. Every 
 - `a | b` is **ordered choice** with backtracking: the first alternative that matches wins.
 - Repeats (`some`, `any`) are **greedy** and never give back.
 - Matching is **case-sensitive**; pass `ignoreCase: true` for literals to ignore case.
-- Paren code is **never evaluated**. Only `(@name)`, bound to a delegate you supply, is allowed, so rules can safely come from untrusted text.
+- Paren code is **never evaluated**. Only `(@name)`, bound to a delegate you supply, is allowed.
 
 ## Documentation
 
 | | |
 |---|---|
-| [Tutorial](docs/Tutorial.md) | Sixteen lessons with exercises and solutions, from your first rule to an INI-file parser and compiling to IL. Start here if you are new to parse. |
-| [Reference](docs/Reference.md) | Every keyword and the text syntax, grammars, what a parse returns, errors, what backtracking undoes, compiling to IL, and limits. |
-| [Benchmarks](docs/Benchmarks.md) | Comparison with .NET `Regex` and `System.Text.Json`, the interpreter against the IL back end, with numbers and caveats. |
-| [Architecture](docs/Architecture.md) | For contributors: the three engines, the node compiler, the gap buffer, choice dispatch, the IL back end, the invariants, the tests, and how to add a keyword. |
-| [Samples](samples/README.md) | Eight runnable programs that check their own results: a calculator, a JSON reader, INI, CSV, log analysis, a source cleaner, a block-mode robot language, and a template engine. |
+| [Tutorial](docs/Tutorial.md) | Sixteen lessons with exercises, from a first rule to an INI parser and compiling to IL. Start here if you are new to parse. |
+| [Reference](docs/Reference.md) | Every keyword, the text syntax, grammars, results, errors, backtracking, compiling to IL, and limits. |
+| [Benchmarks](docs/Benchmarks.md) | Numbers against .NET `Regex` and `System.Text.Json`, interpreted and compiled. |
+| [Architecture](docs/Architecture.md) | For contributors: how the engines, compiler and tests work, and how to add a keyword. |
+| [Samples](samples/README.md) | Eight runnable programs: a calculator, a JSON reader, INI, CSV, log analysis, a source cleaner, a block-mode robot language, and a template engine. |
 
-The public API is fully documented with XML comments, so IntelliSense shows what each keyword does.
+The public API has XML doc comments, so IntelliSense shows what each keyword does.
 
 ## Keyword map
 
-REBOL keywords, and the matching fluent builder from `using static RebolParse.P;`. See the [reference](docs/Reference.md#keywords) for exactly what each one matches and consumes.
+REBOL keywords and their fluent equivalents from `using static RebolParse.P;`. The [reference](docs/Reference.md#keywords) has full details.
 
 | REBOL | Fluent | Notes |
 |---|---|---|
@@ -215,24 +208,25 @@ REBOL keywords, and the matching fluent builder from `using static RebolParse.P;
 
 ## Differences from REBOL
 
-- **No evaluated code.** `(@name)` calls a bound delegate; there is no interpreter behind the parens. `keep (@fn)` and `if (@fn)` take named value functions, passed as the `values` argument of `Dialect.Read`.
-- **Case-sensitive by default.** REBOL's parse is case-insensitive unless told otherwise; here you opt in with `ignoreCase: true`.
-- **Edits work on a copy.** `insert`, `change` and `remove` never modify your input; the edited result is `ParseResult.Output`.
-- **Rules are values.** A rule is an immutable object you build once and reuse; there is no global state.
-- **Not every keyword.** `then`, `return`, `limit` and the `only` refinements are not implemented. `while` is an alias of `any` and has its no-progress guard, so a rule that matches nothing cannot loop forever.
-- Backtracking is plain recursive descent with no memoization, so pathological grammars can be slow. Captures, actions and edits made in a branch that later fails are not undone, as in REBOL.
+- **No evaluated code.** `(@name)` calls a bound delegate. Nothing else in parens runs. `keep (@fn)` and `if (@fn)` take named value functions, passed as the `values` argument of `Dialect.Read`.
+- **Case-sensitive by default.** REBOL is case-insensitive by default. Here you opt in with `ignoreCase: true`.
+- **Edits work on a copy.** `insert`, `change` and `remove` never modify your input. The result is in `ParseResult.Output`.
+- **Rules are values.** A rule is an immutable object you build once and reuse. There is no global state.
+- **Not every keyword.** `then`, `return`, `limit` and the `only` refinements are not implemented. `while` is an alias for `any`, including its guard against looping on an empty match.
+- **No memoization.** Backtracking is plain recursive descent, so some grammars can be slow.
+- **Failed branches are not undone.** As in REBOL, captures, actions and edits made in a branch that later fails stay in place. The [reference](docs/Reference.md#what-is-undone-when-a-branch-fails) shows how to write rules around this.
 
 ## Performance
 
-Rules compile to specialized matcher nodes the first time they are used, so build a rule once and reuse it (a `static readonly` field is ideal), as you would a `Regex`. Text is matched as a `ReadOnlySpan<char>` with vectorized scanning for literals. `Parser.IsMatch` allocates nothing for rules that do not capture or edit; `Parser.Parse` returns captures and edits.
+Build a rule once and reuse it, for example as a `static readonly` field, as you would a `Regex`. Rules compile to matcher nodes on first use. Text is matched as a `ReadOnlySpan<char>`, and literal searches are vectorized. `Parser.IsMatch` allocates nothing for rules that do not capture or edit.
 
-On flat text the interpreter runs ahead of .NET's interpreted `Regex` on most tasks and ahead of `RegexOptions.Compiled` on extraction, while `RegexOptions.Compiled` still wins plain validation and recursion against it. `rule.Compiled()` generates IL and closes that gap: it beats `RegexOptions.Compiled` on every benchmark here, including deep recursion. Edits (`remove`, `change`, `insert`) are linear when they sweep through the text: interpreted, within 2x of `Regex.Replace`; compiled, faster. [Benchmarks](docs/Benchmarks.md) has the numbers, the method, and how to reproduce them.
+Interpreted, Parse beats interpreted `Regex` on most tasks and beats `RegexOptions.Compiled` on extraction. `RegexOptions.Compiled` still wins on simple validation and recursion. Calling `.Compiled()` closes that gap. Edits run in linear time: within 2x of `Regex.Replace` when interpreted, and faster when compiled. [Benchmarks](docs/Benchmarks.md) has the numbers and how to reproduce them.
 
 ## Build
 
 ```bash
-dotnet test                                                   # 500+ tests, 100% line and branch coverage of the library
-dotnet run --project samples/Samples                          # eight runnable examples (add a name to run one)
+dotnet test                                                   # 500+ tests, 100% line and branch coverage
+dotnet run --project samples/Samples                          # all samples (add a name to run one)
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"
 ```
 
