@@ -239,6 +239,9 @@ internal static class IlRuntime
         return true;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static void Step(TextEngine e) => e.Ctx.Step();
+
     public static void LoopEnter(TextEngine e) => e.Ctx.LoopDepth++;
     public static void LoopExit(TextEngine e) => e.Ctx.LoopDepth--;
 
@@ -286,6 +289,7 @@ internal static class IlRuntime
     public static int Call(RefSite site, string text, int pos, TextEngine e)
     {
         System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();   // deep input or left recursion
+        e.Ctx.Step();
         var bound = site.Resolve(e);
         int end;
         if (bound.Target is IlNode il)
@@ -311,6 +315,7 @@ internal static class IlRuntime
     public static int CallBuf(RefSite site, int pos, TextEngine e)
     {
         System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();
+        e.Ctx.Step();
         var bound = site.Resolve(e);
         if (bound.Target is IlNode il) return (bound.BufferFn ??= il.Pick(e, buffered: true))(e.Original, pos, e);
         var span = e.CurrentText();
@@ -926,6 +931,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                 Expression.Label(top),
             };
             if (r.Max >= 0) code.Add(Expression.IfThen(Expression.GreaterThanOrEqual(count, Int(r.Max)), Expression.Goto(done)));
+            code.Add(Expression.Call(Runtime(nameof(IlRuntime.Step)), e));
             code.Add(Expression.Assign(before, pos));
             code.Add(Emit(r.Body, pos, bodyFailed));
             code.Add(Expression.PreIncrementAssign(count));
@@ -960,6 +966,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                 Expression.Label(top),
             };
             if (r.Max >= 0) code.Add(Expression.IfThen(Expression.GreaterThanOrEqual(count, Int(r.Max)), Expression.Goto(done)));
+            code.Add(Expression.Call(Runtime(nameof(IlRuntime.Step)), e));
             code.Add(Expression.Assign(before, pos));
             code.Add(Expression.Assign(lenBefore, len));
             code.Add(Expression.Call(Runtime(nameof(IlRuntime.ClearFlags)), e));
@@ -1058,6 +1065,7 @@ public static IlNode? TryCompile(Rule rule, bool buffered = false)
                 Expression.Assign(from, pos),
                 Expression.Label(top),
                 Expression.IfThen(Expression.GreaterThan(from, len), Fail(fail)),
+                Expression.Call(Runtime(nameof(IlRuntime.Step)), e),
                 Expression.Assign(q, from),
             };
             if (snap != null) parts.Add(Expression.Assign(snap, Snap()));

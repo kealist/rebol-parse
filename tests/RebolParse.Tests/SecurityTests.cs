@@ -93,6 +93,94 @@ public class SecurityTests
         Assert.Equal(0, wrong);
     }
 
+    // ---- the step limit ----
+
+    private static IEnumerable<Rule> Engines(Rule rule) => [rule, rule.Compiled()];
+
+    [Fact]
+    public void A_loop_that_seeks_back_and_forth_stops_at_the_default_limit()
+    {
+        // pure, no edits: from 0 the body seeks to 1, from 1 back to 0, forever
+        var rule = Dialect.Read("d: skip c: :d any [\"x\" :c | \"y\" :d]");
+        foreach (var r in Engines(rule))
+            Assert.Throws<StepLimitExceededException>(() => Parser.IsMatch("xy", r, partial: true));
+        var block = Dialect.Read("d: skip c: :d any [#\"x\" :c | #\"y\" :d]");
+        Assert.Throws<StepLimitExceededException>(() => Parser.IsMatch(new List<object> { 'x', 'y' }, block, partial: true));
+    }
+
+    [Fact]
+    public void A_loop_that_grows_the_text_stops_at_the_limit()
+    {
+        var rule = Dialect.Read("m: any [insert \"x\" :m]");
+        foreach (var r in Engines(rule))
+            Assert.Throws<StepLimitExceededException>(() => Parser.Parse("a", r, partial: true, maxSteps: 100_000));
+        Assert.Throws<StepLimitExceededException>(() => Parser.Parse(new List<object> { 1 }, rule, partial: true, maxSteps: 100_000));
+    }
+
+    [Fact]
+    public void Exponential_backtracking_stops_at_the_limit()
+    {
+        var grammar = Dialect.ReadGrammar("a = \"x\" a \"y\" | \"x\" a | \"x\"");
+        var compiled = grammar.ToDictionary(d => d.Key, d => (Rule)d.Value.Compiled());
+        var input = new string('x', 40) + "!";
+        Assert.Throws<StepLimitExceededException>(() => Parser.IsMatch(input, new Ref("a"), grammar));
+        Assert.Throws<StepLimitExceededException>(() => Parser.IsMatch(input, new Ref("a"), compiled));
+    }
+
+    [Fact]
+    public void Scans_count_each_position_they_try()
+    {
+        var rule = Dialect.Read("to [\"a\" \"b\"]");
+        var input = new string('a', 1000) + "b";
+        foreach (var r in Engines(rule))
+        {
+            Assert.Throws<StepLimitExceededException>(() => Parser.IsMatch(input, r, partial: true, maxSteps: 100));
+            Assert.True(Parser.IsMatch(input, r, partial: true, maxSteps: 10_000));
+        }
+        Assert.Throws<StepLimitExceededException>(() =>
+            Parser.IsMatch(input.Select(c => (object)c).ToList(), Dialect.Read("to [#\"a\" #\"b\"]"), partial: true, maxSteps: 100));
+    }
+
+    [Fact]
+    public void The_limit_can_be_raised_turned_off_or_rejected()
+    {
+        var rule = Dialect.Read("some [\"a\" | \"b\"]");
+        var input = new string('a', 5000);
+        var e = Assert.Throws<StepLimitExceededException>(() => Parser.Parse(input, rule, maxSteps: 10));
+        Assert.Equal(10, e.Limit);
+        Assert.True(Parser.Parse(input, rule, maxSteps: Parser.NoStepLimit).Matched);
+        Assert.Throws<ArgumentOutOfRangeException>(() => Parser.IsMatch(input, rule, maxSteps: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Parser.Parse(new List<object>(), rule, maxSteps: -1));
+    }
+
+    [Fact]
+    public void The_default_limit_scales_with_the_input()
+    {
+        Assert.Equal(10_000_000, Parser.DefaultMaxSteps(0));
+        Assert.Equal(1_000_000_000, Parser.DefaultMaxSteps(1_000_000));
+    }
+
+    [Fact]
+    public void The_0_1_signatures_still_work()
+    {
+        var rule = Dialect.Read("some digit");
+        Assert.True(Parser.Parse("123", rule, null, false, false).Matched);
+        Assert.True(Parser.Parse(new List<object> { '1' }, rule, null, false, false).Matched);
+        Assert.True(Parser.IsMatch("123", rule, null, false, false));
+        Assert.True(Parser.IsMatch(new List<object> { '1' }, rule, null, false, false));
+    }
+
+    [Fact]
+    public void A_parse_stopped_by_the_limit_gives_its_edit_buffer_back_cleared()
+    {
+        const string secret = "token=hunter2-very-secret-value-xx";
+        Assert.Throws<StepLimitExceededException>(() =>
+            Parser.Parse(secret, Dialect.Read("remove \"token\" m: any [insert \"x\" :m]"), maxSteps: 1000));
+        var rented = ArrayPool<char>.Shared.Rent(secret.Length);
+        try { Assert.DoesNotContain("hunter2", new string(rented)); }
+        finally { ArrayPool<char>.Shared.Return(rented); }
+    }
+
     // ---- edited text ----
 
     [Fact]

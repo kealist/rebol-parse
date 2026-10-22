@@ -34,7 +34,7 @@ factor = some digit | "(" expr ")"
 
 **Keywords and built-ins** are case-insensitive in rule text (`SOME Digit` works). Variable names and mark names are case-sensitive, and so are rule names in `Ref` lookups unless the dictionary you pass was built with a case-insensitive comparer.
 
-**Paren code is never evaluated.** `(print 1)` is an error; only `(@name)` is allowed, bound to a C# delegate you pass in. So rules read from untrusted text cannot run code. They can still use CPU: a rule with heavy backtracking can take exponential time, and a loop that edits and seeks back can run forever, so give untrusted rules a time limit (for example, parse on a worker you can abandon).
+**Paren code is never evaluated.** `(print 1)` is an error; only `(@name)` is allowed, bound to a C# delegate you pass in. So rules read from untrusted text cannot run code. Every parse also has a [step limit](#step-limit), so a rule that backtracks exponentially or loops forever throws instead of hanging.
 
 ## Fluent operators and chained forms
 
@@ -123,6 +123,21 @@ A `ParseResult` converts to `bool`, so `if (Parser.Parse(...))` works. Captures 
 | `KeyNotFoundException` | at read time, a `(@name)` with no registered action or value function; at parse time, a `Ref` to an undefined rule, a `Seek` to an unset mark, or an `insert`/`change` of an unset variable |
 | `InvalidOperationException` | `keep` outside `collect`; an editing rule inside `IsMatch` |
 | `InsufficientExecutionStackException` | named rules or `into` recursing deeper than the thread's stack allows: left recursion (`a = a "x"`), or input nested very deeply. The parse stops cleanly instead of crashing the process |
+| `StepLimitExceededException` | the parse used more steps than its limit (see [Step limit](#step-limit)) |
+| `ArgumentOutOfRangeException` | a `maxSteps` of zero or less |
+
+## Step limit
+
+Every `Parse` and `IsMatch` counts its work and throws `StepLimitExceededException` when it uses too much. A step is one loop iteration, one position tried by `to` or `thru`, or one call of a named rule. Each inserted character also counts as a step, and edits cost one step per 16 characters they move. So a loop that keeps inserting, or keeps seeking back across an edit, stops too.
+
+The default is `Parser.DefaultMaxSteps(input length)`: 1000 steps per character (or item), and at least 10 million. Real grammars use a few steps per character, so only runaway rules reach it. Exponential backtracking, a loop that seeks back and forth, and a loop that doubles the text all stop within a few seconds.
+
+```csharp
+Parser.Parse(input, rule, maxSteps: 50_000);             // a tighter limit for untrusted rules
+Parser.Parse(input, rule, maxSteps: Parser.NoStepLimit); // no limit
+```
+
+Step counts are a budget, not part of the result. The three engines count differently (compiled rules inline some calls), so the same parse can use a different number of steps in each.
 
 ## Threading and reuse
 

@@ -31,6 +31,8 @@ public sealed class Ctx
     internal int LoopDepth;
     internal bool IgnoreCase;
     internal bool ReadOnly;
+    internal long StepsLeft;   // loop iterations, scan positions and rule calls still allowed
+    internal long StepLimit;
 
     internal IReadOnlyDictionary<string, object?> VarsOrEmpty => vars ?? NoVars;
     internal Dictionary<string, int> MarksTable => Marks;
@@ -44,8 +46,9 @@ public sealed class Ctx
     internal int MarkAt(string name) =>
         marks != null && marks.TryGetValue(name, out var at) ? at : throw new KeyNotFoundException($"Undefined mark '{name}'.");
 
-    internal void Reset(IReadOnlyDictionary<string, Rule>? rules, bool ignoreCase, bool readOnly)
+    internal void Reset(IReadOnlyDictionary<string, Rule>? rules, bool ignoreCase, bool readOnly, long maxSteps)
     {
+        StepsLeft = StepLimit = maxSteps;
         vars?.Clear();
         marks?.Clear();
         collected?.Clear();
@@ -70,6 +73,31 @@ public sealed class Ctx
     }
 
     internal void ReturnBlock() => blockDepth--;
+
+    /// <summary>Count one unit of work that may repeat: a loop iteration, a scan position or a named-rule call.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void Step()
+    {
+        if (--StepsLeft < 0) TooManySteps();
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    /// <summary>Count work that is not one step: characters inserted, or characters an edit had to move.</summary>
+    internal void Charge(long steps)
+    {
+        StepsLeft -= steps;
+        if (StepsLeft < 0) TooManySteps();
+    }
+
+    private void TooManySteps() => throw new StepLimitExceededException(StepLimit);
+}
+
+/// <summary>Thrown when a parse uses more steps than its limit: see <see cref="Parser"/>.</summary>
+public sealed class StepLimitExceededException(long limit)
+    : Exception($"The parse took more than {limit:N0} steps. The rule may backtrack exponentially or loop without end; pass a larger maxSteps if the input really needs it.")
+{
+    /// <summary>The limit that was reached.</summary>
+    public long Limit { get; } = limit;
 }
 
 /// <param name="Matched">Whether the rule matched (and consumed all input, unless parsing partially).</param>
@@ -82,34 +110,62 @@ public sealed record ParseResult(bool Matched, int Position, IReadOnlyDictionary
     public static implicit operator bool(ParseResult r) => r.Matched;
 }
 
-/// <summary>Runs rules against input. <see cref="Parse(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/> returns captures and edits; <see cref="IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/> only says whether the rule matched, and allocates nothing.</summary>
+/// <summary>Runs rules against input. <see cref="Parse(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool, long?)"/> returns captures and edits; <see cref="IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool, long?)"/> only says whether the rule matched, and allocates nothing.</summary>
+/// <remarks>
+/// Every parse has a step limit, so a rule that backtracks exponentially or loops forever throws
+/// <see cref="StepLimitExceededException"/> instead of hanging. A step is one loop iteration, one position tried by
+/// <c>to</c>/<c>thru</c>, or one call of a named rule. Without <c>maxSteps</c> the limit is
+/// <see cref="DefaultMaxSteps"/> of the input length; pass <see cref="NoStepLimit"/> to turn it off.
+/// </remarks>
 public static class Parser
 {
+    /// <summary>Pass as <c>maxSteps</c> to parse without a step limit.</summary>
+    public const long NoStepLimit = long.MaxValue;
+
+    /// <summary>
+    /// The step limit used when no <c>maxSteps</c> is given: 1000 steps per item of input, and at least ten million.
+    /// Real grammars use a few steps per item, so only runaway rules reach it, in about a second.
+    /// </summary>
+    public static long DefaultMaxSteps(int inputLength) => Math.Max(10_000_000L, 1000L * inputLength);
+
+    private static long Limit(long? maxSteps, int inputLength) => maxSteps switch
+    {
+        null => DefaultMaxSteps(inputLength),
+        <= 0 => throw new ArgumentOutOfRangeException(nameof(maxSteps), maxSteps, "The step limit must be positive; use Parser.NoStepLimit for none."),
+        _ => maxSteps.Value,
+    };
+
     /// <summary>
     /// Parse a string. By default the rule must consume all input, as in REBOL.
     /// <paramref name="ignoreCase"/> makes literal strings and chars match regardless of case.
     /// Build the rule once and reuse it: the first parse with a rule compiles it, like constructing a <c>Regex</c>.
     /// </summary>
+    /// <remarks><c>maxSteps</c> is the step limit (see <see cref="Parser"/>); null means <see cref="DefaultMaxSteps"/>.</remarks>
+    /// <exception cref="StepLimitExceededException">The parse used more steps than its limit.</exception>
     public static ParseResult Parse(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
-        bool partial = false, bool ignoreCase = false)
+        bool partial = false, bool ignoreCase = false, long? maxSteps = null)
     {
         var node = Compiler.Get(rule);
         var ctx = new Ctx();
-        ctx.Reset(rules, ignoreCase, readOnly: false);
+        ctx.Reset(rules, ignoreCase, readOnly: false, Limit(maxSteps, input.Length));
         var engine = new TextEngine();
         var text = engine.Reset(input, ignoreCase, ctx, isReadOnly: false);
         var pos = 0;
-        var ok = node.Match(engine, ref text, ref pos);
+        bool ok;
+        try { ok = node.Match(engine, ref text, ref pos); }
+        catch { engine.Clear(); throw; }   // give the edit buffer back, cleared
         return new ParseResult(ok && (partial || pos == text.Length), pos, ctx.VarsOrEmpty, engine.Result());
     }
 
     /// <summary>Parse a block of values (chars, strings, numbers, <see cref="Word"/>, nested lists).</summary>
+    /// <remarks><c>maxSteps</c> is the step limit (see <see cref="Parser"/>); null means <see cref="DefaultMaxSteps"/>.</remarks>
+    /// <exception cref="StepLimitExceededException">The parse used more steps than its limit.</exception>
     public static ParseResult Parse(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
-        bool partial = false, bool ignoreCase = false)
+        bool partial = false, bool ignoreCase = false, long? maxSteps = null)
     {
         var series = new BlockSeries(input, ignoreCase);
         var ctx = new Ctx();
-        ctx.Reset(rules, ignoreCase, readOnly: false);
+        ctx.Reset(rules, ignoreCase, readOnly: false, Limit(maxSteps, input.Count));
         var pos = 0;
         var ok = new Matcher(series, ctx).Match(rule, ref pos);
         return new ParseResult(ok && (partial || pos == series.Length), pos, ctx.VarsOrEmpty, series.ToResult());
@@ -118,25 +174,51 @@ public static class Parser
     /// <summary>
     /// Does <paramref name="rule"/> match? Allocation-free once warm for rules that do not <c>copy</c>, <c>set</c>,
     /// <c>collect</c> or use <see cref="P.Is"/> on text: all working state is reused per thread. Because nothing is
-    /// returned, rules that edit input (<c>insert</c>, <c>change</c>, <c>remove</c>) throw; use <see cref="Parse(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/> for those.
+    /// returned, rules that edit input (<c>insert</c>, <c>change</c>, <c>remove</c>) throw; use <see cref="Parse(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool, long?)"/> for those.
     /// </summary>
+    /// <remarks><c>maxSteps</c> is the step limit (see <see cref="Parser"/>); null means <see cref="DefaultMaxSteps"/>.</remarks>
+    /// <exception cref="StepLimitExceededException">The parse used more steps than its limit.</exception>
     public static bool IsMatch(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
-        bool partial = false, bool ignoreCase = false)
+        bool partial = false, bool ignoreCase = false, long? maxSteps = null)
     {
         var node = Compiler.Get(rule);
         var scratch = Scratch.Acquire();
-        try { return scratch.RunText(input, node, rules, partial, ignoreCase); }
+        try { return scratch.RunText(input, node, rules, partial, ignoreCase, Limit(maxSteps, input.Length)); }
         finally { scratch.Release(); }
     }
 
-    /// <summary><see cref="IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool)"/> for a block of values.</summary>
+    /// <summary><see cref="IsMatch(string, Rule, IReadOnlyDictionary{string, Rule}?, bool, bool, long?)"/> for a block of values.</summary>
+    /// <remarks><c>maxSteps</c> is the step limit (see <see cref="Parser"/>); null means <see cref="DefaultMaxSteps"/>.</remarks>
+    /// <exception cref="StepLimitExceededException">The parse used more steps than its limit.</exception>
     public static bool IsMatch(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules = null,
-        bool partial = false, bool ignoreCase = false)
+        bool partial = false, bool ignoreCase = false, long? maxSteps = null)
     {
         var scratch = Scratch.Acquire();
-        try { return scratch.RunBlock(input, rule, rules, partial, ignoreCase); }
+        try { return scratch.RunBlock(input, rule, rules, partial, ignoreCase, Limit(maxSteps, input.Count)); }
         finally { scratch.Release(); }
     }
+
+    // The 0.1 signatures, kept so code compiled against them still runs. They use the default step limit.
+
+    /// <summary>Parse with the default step limit.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public static ParseResult Parse(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase) =>
+        Parse(input, rule, rules, partial, ignoreCase, maxSteps: null);
+
+    /// <summary>Parse with the default step limit.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public static ParseResult Parse(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase) =>
+        Parse(input, rule, rules, partial, ignoreCase, maxSteps: null);
+
+    /// <summary>IsMatch with the default step limit.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public static bool IsMatch(string input, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase) =>
+        IsMatch(input, rule, rules, partial, ignoreCase, maxSteps: null);
+
+    /// <summary>IsMatch with the default step limit.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public static bool IsMatch(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase) =>
+        IsMatch(input, rule, rules, partial, ignoreCase, maxSteps: null);
 
     /// <summary>Per-thread reusable parse state for <c>IsMatch</c>. A re-entrant call (an action calling IsMatch) gets its own.</summary>
     private sealed class Scratch
@@ -163,17 +245,17 @@ public static class Parser
             inUse = false;
         }
 
-        public bool RunText(string input, Node node, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
+        public bool RunText(string input, Node node, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase, long maxSteps)
         {
-            ctx.Reset(rules, ignoreCase, readOnly: true);
+            ctx.Reset(rules, ignoreCase, readOnly: true, maxSteps);
             var text = engine.Reset(input, ignoreCase, ctx, isReadOnly: true);
             var pos = 0;
             return node.Match(engine, ref text, ref pos) && (partial || pos == text.Length);
         }
 
-        public bool RunBlock(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase)
+        public bool RunBlock(IReadOnlyList<object> input, Rule rule, IReadOnlyDictionary<string, Rule>? rules, bool partial, bool ignoreCase, long maxSteps)
         {
-            ctx.Reset(rules, ignoreCase, readOnly: true);
+            ctx.Reset(rules, ignoreCase, readOnly: true, maxSteps);
             block.Reset(input, ignoreCase, newReadOnly: true);
             matcher.Reset(block, ctx);
             var pos = 0;
@@ -264,12 +346,14 @@ internal sealed class Matcher
                 return true;
 
             case Insert ins:
+                ctx.Charge((s.Length - pos) >> 4);   // the items after pos shift
                 pos += s.Insert(pos, ins.Value(ctx));
                 return true;
 
             case Change chg:
                 var chStart = pos;
                 if (!Match(chg.Body, ref pos)) return false;
+                ctx.Charge((s.Length - chStart) >> 4);
                 s.Remove(chStart, pos);
                 pos = chStart + s.Insert(chStart, chg.Value(ctx));
                 return true;
@@ -277,6 +361,7 @@ internal sealed class Matcher
             case Remove rem:
                 var rmStart = pos;
                 if (!Match(rem.Body, ref pos)) return false;
+                ctx.Charge((s.Length - pos) >> 4);
                 s.Remove(rmStart, pos);
                 pos = rmStart;
                 return true;
@@ -371,6 +456,7 @@ internal sealed class Matcher
 
             case Ref r:
                 System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();   // deep input or left recursion
+                ctx.Step();
                 if (!ctx.Rules.TryGetValue(r.Name, out var target))
                     throw new KeyNotFoundException(Errors.UndefinedRule(r.Name));
                 return Match(target, ref pos);
@@ -400,6 +486,7 @@ internal sealed class Matcher
         ctx.LoopDepth++;
         while (rep.Max < 0 || count < rep.Max)
         {
+            ctx.Step();
             var before = pos;
             var lengthBefore = s.Length;
             ctx.BreakRequested = false; // drop a stale break from outside this loop or a failed branch
@@ -419,6 +506,7 @@ internal sealed class Matcher
     {
         for (var p = pos; p <= s.Length; p++)
         {
+            ctx.Step();
             var q = p;
             if (!Match(body, ref q)) continue;
             pos = thru ? q : p;

@@ -38,7 +38,7 @@ All three must agree on every answer. The tests exist to hold them to that (see 
 
 ## Rules and the two readers
 
-Records give value equality and cheap construction, and make a rule safe to share between threads. `Dialect` is a hand-written tokenizer plus recursive-descent reader (`ReadAlt` for `|`, `ReadItem` for one element, `ReadWord` for keywords). Paren code is never evaluated: `(@name)` only looks a name up in a dictionary the caller supplies, so rules read from untrusted text cannot run code. Nesting depth is capped at `Dialect.MaxDepth`, and named-rule calls and `into` check the stack, so hostile text or input throws instead of overflowing it. `ReadGrammar` splits `name = rule` definitions by finding top-level words followed by a `=` token.
+Records give value equality and cheap construction, and make a rule safe to share between threads. `Dialect` is a hand-written tokenizer plus recursive-descent reader (`ReadAlt` for `|`, `ReadItem` for one element, `ReadWord` for keywords). Paren code is never evaluated: `(@name)` only looks a name up in a dictionary the caller supplies, so rules read from untrusted text cannot run code. Nesting depth is capped at `Dialect.MaxDepth`, and named-rule calls and `into` check the stack, so hostile text or input throws instead of overflowing it. `Ctx.Step` counts loop iterations, generic scan positions and named-rule calls (and `Ctx.Charge` counts inserted and moved characters) against the parse's step limit. The single-character loops and vectorized scans are not counted, because they always move forward. `ReadGrammar` splits `name = rule` definitions by finding top-level words followed by a `=` token.
 
 ## Entry points and state
 

@@ -152,6 +152,7 @@ internal sealed class TextEngine
     {
         if (gapSize > 0)
         {
+            Ctx.Charge(Math.Abs(to - gapStart) >> 4);   // so edits that keep moving the gap across the text run out of steps
             if (to > gapStart) Array.Copy(buffer!, gapStart + gapSize, buffer!, gapStart, to - gapStart);
             else if (to < gapStart) Array.Copy(buffer!, to, buffer!, to + gapSize, gapStart - to);
         }
@@ -185,6 +186,7 @@ internal sealed class TextEngine
         var str = value?.ToString() ?? "";
         if (str.Length == 0) return 0;
         Edited = true;
+        Ctx.Charge(str.Length);   // so a loop that keeps inserting runs out of steps before memory
         MoveGap(pos);
         GrowGap(str.Length);
         str.CopyTo(0, buffer!, gapStart, str.Length);
@@ -671,8 +673,10 @@ internal sealed class RepeatPure(Node body, int min, int max) : Node
     {
         var start = pos;
         var count = 0;
+        var ctx = e.Ctx;
         while (max < 0 || count < max)
         {
+            ctx.Step();
             var before = pos;
             if (!body.Match(e, ref text, ref pos)) break;
             count++;
@@ -696,6 +700,7 @@ internal sealed class RepeatNode(Node body, int min, int max) : Node
         ctx.LoopDepth++;
         while (max < 0 || count < max)
         {
+            ctx.Step();
             var before = pos;
             var lengthBefore = text.Length;
             ctx.BreakRequested = false;   // drop a stale break from outside this loop
@@ -740,6 +745,7 @@ internal sealed class ScanNode(Node body, bool thru) : Node
     {
         for (var p = pos; p <= text.Length; p++)
         {
+            e.Ctx.Step();
             var q = p;
             if (!e.Try(body, ref text, ref q)) continue;
             pos = thru ? q : p;
@@ -913,6 +919,7 @@ internal sealed class RefNode(string name) : Node
     public override bool Match(TextEngine e, ref ReadOnlySpan<char> text, ref int pos)
     {
         System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();   // deep input or left recursion
+        e.Ctx.Step();
         return e.Try(Target(e), ref text, ref pos);
     }
 
