@@ -35,7 +35,7 @@ public static class Dialect
         var bindings = new Bindings(actions, values);
         var tokens = Tokenize(text);
         var i = 0;
-        return ReadAlt(tokens, ref i, bindings, closer: null); // a stray ']' throws inside ReadAlt
+        return ReadAlt(tokens, ref i, bindings, closer: null, depth: 0); // a stray ']' throws inside ReadAlt
     }
 
     /// <summary>Read several named rules, e.g. for recursive grammars. Pass the result as the <c>rules</c> argument of <c>Parse</c>.</summary>
@@ -87,14 +87,17 @@ public static class Dialect
             if (body.Count == 0) throw new FormatException($"Rule '{name}' is empty.");
             if (rules.ContainsKey(name)) throw new FormatException($"Rule '{name}' is defined twice.");
             var i = 0;
-            rules[name] = ReadAlt(body, ref i, bindings, closer: null);
+            rules[name] = ReadAlt(body, ref i, bindings, closer: null, depth: 0);
         }
         return rules;
     }
 
     // ---- Reader ----
 
-    private static Rule ReadAlt(List<Token> t, ref int i, Bindings acts, string? closer)
+    /// <summary>How deeply blocks and keyword operands may nest in rule text. Real grammars stay far below this.</summary>
+    public const int MaxDepth = 256;
+
+    private static Rule ReadAlt(List<Token> t, ref int i, Bindings acts, string? closer, int depth)
     {
         var alts = new List<Rule>();
         var seq = new List<Rule>();
@@ -109,20 +112,22 @@ public static class Dialect
                 break;
             }
             if (tok.Kind == K.Bar) { i++; Flush(); continue; }
-            seq.Add(ReadItem(t, ref i, acts));
+            seq.Add(ReadItem(t, ref i, acts, depth));
         }
         if (closer != null && (i >= t.Count || t[i].Kind != K.Close)) throw new FormatException("Missing ']'.");
         Flush();
         return alts.Count == 1 ? alts[0] : new Alt([.. alts]);
     }
 
-    private static Rule ReadItem(List<Token> t, ref int i, Bindings acts)
+    private static Rule ReadItem(List<Token> t, ref int i, Bindings acts, int depth)
     {
+        // every nested block and every keyword operand is one level; without a limit, hostile text overflows the stack
+        if (++depth > MaxDepth) throw new FormatException($"Rule nesting is deeper than {MaxDepth} levels.");
         var tok = t[i++];
         switch (tok.Kind)
         {
             case K.Open:
-                var inner = ReadAlt(t, ref i, acts, closer: "]");
+                var inner = ReadAlt(t, ref i, acts, closer: "]", depth);
                 i++; // consume ]
                 return inner;
             case K.Str: return new Lit(tok.Text);
@@ -136,58 +141,58 @@ public static class Dialect
                 var max = min;
                 if (i < t.Count && t[i].Kind == K.Int) max = int.Parse(t[i++].Text);
                 if (i >= t.Count) throw new FormatException($"The count {tok.Text} needs a rule after it, like '{tok.Text} digit'.");
-                return new Repeat(ReadItem(t, ref i, acts), min, max);
+                return new Repeat(ReadItem(t, ref i, acts, depth), min, max);
             case K.Word:
-                return ReadWord(tok.Text, t, ref i, acts);
+                return ReadWord(tok.Text, t, ref i, acts, depth);
             default:
                 throw new FormatException($"Unexpected '{tok.Text}'.");
         }
     }
 
     // the rule a keyword applies to; a keyword at the end of the rule has nothing to apply to
-    private static Rule Operand(string keyword, List<Token> t, ref int i, Bindings acts)
+    private static Rule Operand(string keyword, List<Token> t, ref int i, Bindings acts, int depth)
     {
         if (i >= t.Count) throw new FormatException($"'{keyword}' needs a rule after it.");
-        return ReadItem(t, ref i, acts);
+        return ReadItem(t, ref i, acts, depth);
     }
 
-    private static Rule ReadWord(string w, List<Token> t, ref int i, Bindings acts)
+    private static Rule ReadWord(string w, List<Token> t, ref int i, Bindings acts, int depth)
     {
         switch (w.ToLowerInvariant())
         {
-            case "some": return new Repeat(Operand(w, t, ref i, acts), 1, -1);
-            case "any": return new Repeat(Operand(w, t, ref i, acts), 0, -1);
-            case "opt": return new Repeat(Operand(w, t, ref i, acts), 0, 1);
-            case "while": return new Repeat(Operand(w, t, ref i, acts), 0, -1);
+            case "some": return new Repeat(Operand(w, t, ref i, acts, depth), 1, -1);
+            case "any": return new Repeat(Operand(w, t, ref i, acts, depth), 0, -1);
+            case "opt": return new Repeat(Operand(w, t, ref i, acts, depth), 0, 1);
+            case "while": return new Repeat(Operand(w, t, ref i, acts, depth), 0, -1);
             case "ahead":
-            case "and": return new Ahead(Operand(w, t, ref i, acts));
-            case "not": return new Not(Operand(w, t, ref i, acts));
-            case "to": return new To(Operand(w, t, ref i, acts));
-            case "thru": return new Thru(Operand(w, t, ref i, acts));
-            case "into": return new Into(Operand(w, t, ref i, acts));
+            case "and": return new Ahead(Operand(w, t, ref i, acts, depth));
+            case "not": return new Not(Operand(w, t, ref i, acts, depth));
+            case "to": return new To(Operand(w, t, ref i, acts, depth));
+            case "thru": return new Thru(Operand(w, t, ref i, acts, depth));
+            case "into": return new Into(Operand(w, t, ref i, acts, depth));
             case "quote": return ReadQuoted(t, ref i);
-            case "copy": return new Copy(ReadVarName(t, ref i, "copy"), Operand(w, t, ref i, acts));
-            case "set": return new Set(ReadVarName(t, ref i, "set"), Operand(w, t, ref i, acts));
+            case "copy": return new Copy(ReadVarName(t, ref i, "copy"), Operand(w, t, ref i, acts, depth));
+            case "set": return new Set(ReadVarName(t, ref i, "set"), Operand(w, t, ref i, acts, depth));
             case "charset":
                 if (i >= t.Count || t[i].Kind != K.Str) throw new FormatException("'charset' needs a string like \"a-z0-9_\".");
                 return P.Chars(t[i++].Text);
             case "insert": return new Insert(ReadValue(t, ref i, "insert"));
-            case "remove": return new Remove(Operand(w, t, ref i, acts));
+            case "remove": return new Remove(Operand(w, t, ref i, acts, depth));
             case "keep":
                 if (i < t.Count && t[i].Kind == K.Paren) return new KeepValue(BindValue(t[i++].Text, acts));
                 if (i < t.Count && t[i].Kind == K.Word && t[i].Text.Equals("pick", StringComparison.OrdinalIgnoreCase))
                 {
                     i++;
-                    return new KeepPick(Operand(w, t, ref i, acts));
+                    return new KeepPick(Operand(w, t, ref i, acts, depth));
                 }
-                return new Keep(Operand(w, t, ref i, acts));
+                return new Keep(Operand(w, t, ref i, acts, depth));
             case "if":
                 if (i >= t.Count || t[i].Kind != K.Paren) throw new FormatException("'if' needs a condition like (@name).");
                 var cond = BindValue(t[i++].Text, acts);
                 return new If(ctx => cond(ctx) switch { bool b => b, null => false, _ => true });
-            case "collect": return new Collect(ReadVarName(t, ref i, "collect"), Operand(w, t, ref i, acts));
+            case "collect": return new Collect(ReadVarName(t, ref i, "collect"), Operand(w, t, ref i, acts, depth));
             case "change":
-                var body = Operand(w, t, ref i, acts);
+                var body = Operand(w, t, ref i, acts, depth);
                 return new Change(body, ReadValue(t, ref i, "change"));
         }
         return Builtins.TryGetValue(w, out var b) ? b : new Ref(w);

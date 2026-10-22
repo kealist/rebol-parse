@@ -34,7 +34,7 @@ factor = some digit | "(" expr ")"
 
 **Keywords and built-ins** are case-insensitive in rule text (`SOME Digit` works). Variable names and mark names are case-sensitive, and so are rule names in `Ref` lookups unless the dictionary you pass was built with a case-insensitive comparer.
 
-**Paren code is never evaluated.** `(print 1)` is an error; only `(@name)` is allowed, bound to a C# delegate you pass in. This makes it safe to read rules from untrusted text.
+**Paren code is never evaluated.** `(print 1)` is an error; only `(@name)` is allowed, bound to a C# delegate you pass in. So rules read from untrusted text cannot run code. They can still use CPU: a rule with heavy backtracking can take exponential time, and a loop that edits and seeks back can run forever, so give untrusted rules a time limit (for example, parse on a worker you can abandon).
 
 ## Fluent operators and chained forms
 
@@ -119,9 +119,10 @@ A `ParseResult` converts to `bool`, so `if (Parser.Parse(...))` works. Captures 
 
 | Thrown | When |
 |---|---|
-| `FormatException` | malformed rule text: unmatched or missing bracket, unterminated string or paren, a keyword with nothing to apply to, a char literal longer than one character, paren code that is not `(@name)` |
+| `FormatException` | malformed rule text: unmatched or missing bracket, unterminated string or paren, a keyword with nothing to apply to, a char literal longer than one character, paren code that is not `(@name)`, blocks and keywords nested deeper than `Dialect.MaxDepth` (256) |
 | `KeyNotFoundException` | at read time, a `(@name)` with no registered action or value function; at parse time, a `Ref` to an undefined rule, a `Seek` to an unset mark, or an `insert`/`change` of an unset variable |
 | `InvalidOperationException` | `keep` outside `collect`; an editing rule inside `IsMatch` |
+| `InsufficientExecutionStackException` | named rules or `into` recursing deeper than the thread's stack allows: left recursion (`a = a "x"`), or input nested very deeply. The parse stops cleanly instead of crashing the process |
 
 ## Threading and reuse
 

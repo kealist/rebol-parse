@@ -4,6 +4,11 @@ Versions follow [semantic versioning](https://semver.org). Until 1.0 the API may
 
 ## Unreleased
 
+- **Security fixes.**
+  - Deeply nested rule text throws `FormatException` (limit `Dialect.MaxDepth`, 256) instead of overflowing the stack.
+  - Deeply nested input and left-recursive grammars throw `InsufficientExecutionStackException` instead of crashing the process. This applies to all three engines.
+  - A rule shared by threads that pass different rule tables could run a named rule from the other thread's table. It now uses its own table every time.
+  - The edit buffer is cleared when it goes back to the shared `ArrayPool`, so edited text no longer reaches the next code to rent from the pool.
 - The package also targets `netstandard2.0` (.NET Framework 4.6.1+, .NET Core 2.0+, Mono, Unity), with `System.Memory` as its only dependency. Same engines and results; `net10.0` keeps the vectorized `SearchValues` scans.
 
 ## 0.1.2

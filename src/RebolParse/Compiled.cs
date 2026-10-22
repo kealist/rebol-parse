@@ -82,7 +82,7 @@ internal sealed class TextEngine
 
     private void ReleaseBuffer()
     {
-        if (buffer != null) System.Buffers.ArrayPool<char>.Shared.Return(buffer);
+        if (buffer != null) System.Buffers.ArrayPool<char>.Shared.Return(buffer, clearArray: true);   // the pool is shared: do not hand the text to the next renter
         buffer = null;
         bufferHolds = false;
     }
@@ -167,7 +167,7 @@ internal sealed class TextEngine
         var tail = gapStart + gapSize;
         Array.Copy(buffer!, 0, grown, 0, gapStart);
         Array.Copy(buffer!, tail, grown, tail + extra, length - tail);
-        System.Buffers.ArrayPool<char>.Shared.Return(buffer!);
+        System.Buffers.ArrayPool<char>.Shared.Return(buffer!, clearArray: true);
         buffer = grown;
         gapSize += extra;
         length += extra;
@@ -317,6 +317,7 @@ internal static class Compiler
 
     private static Node Compile(Rule rule)
     {
+        System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();   // a rule tree built deep in code
         switch (rule)
         {
             case Lit l:
@@ -892,23 +893,28 @@ internal sealed class IfNode(Func<Ctx, bool> condition) : Node
 /// <summary>A named rule, looked up in the parse's rule table the first time it runs (and again if the table changes).</summary>
 internal sealed class RefNode(string name) : Node
 {
-    private IReadOnlyDictionary<string, Rule>? lastRules;
-    private Node? target;
+    // The table and its target are replaced together: one rule shared by threads using different tables must never
+    // pair one table with the other's target.
+    private sealed record Bound(IReadOnlyDictionary<string, Rule> Rules, Node Target);
+    private Bound? bound;
 
     private Node Target(TextEngine e)
     {
         var rules = e.Ctx.Rules;
-        if (!ReferenceEquals(rules, lastRules))
+        var b = bound;
+        if (b == null || !ReferenceEquals(b.Rules, rules))
         {
             if (!rules.TryGetValue(name, out var rule)) throw new KeyNotFoundException(Errors.UndefinedRule(name));
-            target = Compiler.Get(rule);
-            lastRules = rules;
+            bound = b = new Bound(rules, Compiler.Get(rule));
         }
-        return target!;
+        return b.Target;
     }
 
-    public override bool Match(TextEngine e, ref ReadOnlySpan<char> text, ref int pos) =>
-        e.Try(Target(e), ref text, ref pos);
+    public override bool Match(TextEngine e, ref ReadOnlySpan<char> text, ref int pos)
+    {
+        System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();   // deep input or left recursion
+        return e.Try(Target(e), ref text, ref pos);
+    }
 
     // a rule that refers back to itself before consuming anything has no usable answer
     public override bool First(TextEngine e, FirstSet set, int depth) =>

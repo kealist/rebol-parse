@@ -29,7 +29,7 @@ A regex gets hard to work with once a pattern nests or captures several things. 
 - **Capture and rewrite.** `copy`, `collect`/`keep`, and `insert`/`change`/`remove` extract data or edit it as it is matched.
 - **Text or data.** The same rules match characters in a string or items in a list, including nested lists.
 - **Rule text or fluent C#.** Write `some digit "." some digit` or `Some(Digit) + "." + Some(Digit)`. Both run on the same engine.
-- **Safe with untrusted rules.** Rule text cannot run code. It can only call delegates you registered.
+- **Rule text cannot run code.** It can only call delegates you registered. Too-deep nesting and runaway recursion throw instead of crashing the process. Untrusted rules can still use a lot of CPU, so run them with a time limit.
 - **Fast.** Interpreted, it beats interpreted .NET `Regex` on most benchmarks. Compiled with `.Compiled()`, it matches or beats `RegexOptions.Compiled` on all of them. `Parser.IsMatch` allocates nothing. See [Benchmarks](docs/Benchmarks.md).
 - **Well tested.** 100% line and branch coverage. Random rules run through the string engine, the list engine and the IL compiler, and all three must agree.
 

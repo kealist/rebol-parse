@@ -285,6 +285,7 @@ internal static class IlRuntime
     /// <summary>Run the rule named at a <see cref="RefSite"/> from code that reads the original string.</summary>
     public static int Call(RefSite site, string text, int pos, TextEngine e)
     {
+        System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();   // deep input or left recursion
         var bound = site.Resolve(e);
         int end;
         if (bound.Target is IlNode il)
@@ -309,6 +310,7 @@ internal static class IlRuntime
     /// <summary>Run the rule named at a <see cref="RefSite"/> from code that reads the edit buffer; the target may edit it.</summary>
     public static int CallBuf(RefSite site, int pos, TextEngine e)
     {
+        System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();
         var bound = site.Resolve(e);
         if (bound.Target is IlNode il) return (bound.BufferFn ??= il.Pick(e, buffered: true))(e.Original, pos, e);
         var span = e.CurrentText();

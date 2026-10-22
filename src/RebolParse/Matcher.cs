@@ -350,6 +350,7 @@ internal sealed class Matcher
                 return true;
 
             case Into into:
+                System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();   // deeply nested input
                 if (pos >= s.Length || s[pos] is not IReadOnlyList<object> block) return false;
                 var inner = ctx.RentBlock(block);
                 var outer = s;
@@ -369,6 +370,7 @@ internal sealed class Matcher
                 return true;
 
             case Ref r:
+                System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();   // deep input or left recursion
                 if (!ctx.Rules.TryGetValue(r.Name, out var target))
                     throw new KeyNotFoundException(Errors.UndefinedRule(r.Name));
                 return Match(target, ref pos);
