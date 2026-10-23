@@ -161,7 +161,7 @@ public class SecurityTests
     }
 
     [Fact]
-    public void The_0_1_signatures_still_work()
+    public void The_0_2_signatures_still_work()
     {
         var rule = Dialect.Read("some digit");
         Assert.True(Parser.Parse("123", rule, null, false, false).Matched);

@@ -198,7 +198,7 @@ public static class Parser
         finally { scratch.Release(); }
     }
 
-    // The 0.1 signatures, kept so code compiled against them still runs. They use the default step limit.
+    // The 0.2 signatures, kept so code compiled against them still runs. They use the default step limit.
 
     /// <summary>Parse with the default step limit.</summary>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
