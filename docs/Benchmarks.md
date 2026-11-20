@@ -261,6 +261,58 @@ One pass over 20,000 different orders, each with its own parsed `JsonDocument`, 
 
 These are short runs, and the error bars on the single-rule columns are wide (often 30 to 100% of the figure), so read differences under about 1.5 times as noise. The all-six column is steadier.
 
+### Stress run with larger rules
+
+The same 20,000 orders against three rules of the size a business would write, seven to nine conditions each, and all three together. The sample's text is shown; the libraries need `?.` or `np(...)` on paths, a count before a list item, `ContainsKey` before a key, and the `MetaJson` helper for JSON, and use that one safe spelling on both data sets.
+
+- **Eligibility**, plain objects only: `Order.Customer.Tier != "Bronze" && (Order.Customer.Address.City == "Oslo" || Order.Customer.Employer.Address.City == "Oslo" || Order.Customer.Employer.Parent.Address.City == "Oslo") && Order.Lines.Count >= 2 && Order.Lines[0].Product.Price.Amount > 50 && !(Order.Lines[1].Qty < 3) && Order.Tags["channel"] != "phone" && Order.Previous != null`
+- **Fraud**, nearly all JSON: `(Order.Metadata.priority >= 7 || Order.Metadata.customer.score < 20) && Order.Metadata.source != "store" && !Order.Metadata.gift && (Order.Metadata["ship-to"].city != Order.Customer.Address.City || Order.Metadata.customer.segment == "consumer") && Order.Metadata.tags[0] == "rush"`
+- **Routing**, both, with brackets inside brackets: `(Order.Customer.Tier == "Gold" && Order.Metadata.priority >= 5 || Order.Customer.Tier == "Silver" && Order.Metadata.priority >= 8) && (Order.Lines.Count > 2 || Order.Lines[0].Product.WeightKg > 2.5) && !(Order.Metadata.source == "phone" && Order.Tags["channel"] == "phone") && Order.Customer.Employer.Parent != null && Order.Metadata.customer.score >= 40`
+
+One pass over 20,000 orders:
+
+| | Eligibility | Fraud | Routing | All three |
+|---|---:|---:|---:|---:|
+| **Clean data** | | | | |
+| RebolParse rules sample | 0.45 ms | 5.2 ms, 0.1 MB | 3.0 ms | **7.7 ms**, 0.1 MB |
+| DynamicExpresso | 0.55 ms | 7.0 ms, 3.8 MB | 3.3 ms, 1.2 MB | **9.4 ms**, 5.0 MB |
+| System.Linq.Dynamic.Core | 0.49 ms | 7.0 ms, 3.8 MB | 3.4 ms, 1.2 MB | **9.5 ms**, 5.0 MB |
+| Lambda written in C#, JSON via the helper | 0.37 ms | 7.6 ms, 3.8 MB | 3.8 ms, 1.2 MB | **10.0 ms**, 5.0 MB |
+| **Messy data** | | | | |
+| RebolParse rules sample | 0.29 ms | 4.3 ms, 0.1 MB | 2.1 ms | **6.0 ms**, 0.1 MB |
+| DynamicExpresso | 0.31 ms | 5.8 ms, 3.3 MB | 2.2 ms, 0.8 MB | **7.6 ms**, 4.1 MB |
+| System.Linq.Dynamic.Core | 0.28 ms | 5.6 ms, 3.3 MB | 2.2 ms, 0.8 MB | **7.5 ms**, 4.1 MB |
+| Lambda written in C#, JSON via the helper | 0.26 ms | 6.1 ms, 3.3 MB | 2.6 ms, 0.8 MB | **7.8 ms**, 4.1 MB |
+
+- **A larger rule does not cost in proportion to its size**, because `&&` and `||` stop at the first answer. Nine conditions on plain objects take 0.3 to 0.5 ms for 20,000 orders, the same range as one condition, since most orders fail early. Order the conditions so the cheap, selective ones come first and JSON comes last.
+- **Cost follows how often JSON is reached.** Fraud opens with two JSON reads on every order and takes 4 to 7 ms. Routing checks an enum first, so most orders never touch the metadata, and takes 2 to 3 ms.
+- **The sample is 1.2 to 1.4 times faster on the JSON-heavy rule and on the set**, and allocates 0.1 MB against 4 to 5 MB. Its 0.1 MB comes from the one place it has to make a string: comparing a JSON value with a property.
+- **Three realistic rules over 20,000 orders: 6 to 10 ms.** Messy data is faster than clean because missing values end a rule sooner.
+
+### What rule text is allowed to call
+
+Rule text from users is code, so what it can reach matters as much as how fast it runs. Each line below was compiled, not run, in six setups (`-- safety` prints this). "Locked down" is DynamicExpresso built with `InterpreterOptions.PrimitiveTypes | SystemKeywords` and `EnableAssignment(AssignmentOperators.None)`.
+
+| Rule text | Sample | DynamicExpresso, default | DynamicExpresso, locked down | Dynamic.Core, default or with JSON types registered |
+|---|---|---|---|---|
+| Comparisons, `&&`, `\|\|`, `!`, brackets | yes | yes | yes | yes |
+| Arithmetic: `Order.Id + 1 > 2` | no | yes | yes | yes |
+| Method on a value: `Order.Customer.Name.ToUpper() == "ADA"` | no | yes | yes | yes |
+| Method that changes the object: `Order.Tags.Remove("channel")` | no | **yes** | **yes** | no (see below) |
+| Assignment: `(Order.Customer = null) == null` | no | **yes** | no | reads `=` as "equals" |
+| `Order.GetType().Name` | no | **yes** | **yes** | no |
+| Reflection: `Order.GetType().Assembly.GetType(...)` | no | no | no | no |
+| Static calls: `System.IO.File.Exists("x")`, `File.Exists("x")`, `System.Environment.MachineName` | no | no | no | no |
+| `new System.Text.StringBuilder()`, `typeof(System.IO.File)` | no | no | no | no |
+| A lambda: `Order.Lines.Any(l => l.Qty > 10)` | no | no, unless switched on | no | yes |
+
+- **Neither library lets rule text name a type it was not given**, so static calls, `new` and `typeof` on arbitrary types are refused, and reflection past `GetType()` is blocked. Rule text cannot reach the file system or start a process out of the box.
+- **Both allow arithmetic and method calls, which is the point of them.** The difference is which methods. DynamicExpresso allows any public method on any object the rule can reach, including ones that change it (`Order.Tags.Remove(...)`) and any method on your own classes (`Order.Cancel()`), and by default it allows assignment. Dynamic.Core allows methods only on its built-in types (strings, numbers, dates, LINQ over collections) plus types you register.
+- **Dynamic.Core refused `Tags.Remove` here by accident, not by policy**: the error is an ambiguous overload. Do not read that row as a guarantee about mutating methods; treat any type you register as fully callable.
+- **Every type you register widens the surface.** Registering `JsonDocument` and `JsonElement` to make JSON rules work makes all their methods callable. A helper class with three static methods is a narrower thing to expose.
+- **Neither limits work.** `Order.Customer.Name.PadLeft(2000000000)` is an ordinary string method that allocates 4 GB. If authors are not trusted, also bound rule length and run with a timeout.
+- **The sample allows only what its grammar has**: comparisons, `&&`, `||`, `!`, brackets, and reads of public properties, fields, list positions, dictionary keys and JSON. No arithmetic and no calls, so there is nothing to lock down. A property getter does run when it is read.
+
 ## Run it
 
 ```bash
@@ -269,6 +321,7 @@ dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*S
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*JsonLookup*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRule*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRuleStress*" --job short   # 20,000 orders
+dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- safety        # what each library lets rule text call
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- scenarios     # the deep-object and JSON table, with every rule text
 ```
 

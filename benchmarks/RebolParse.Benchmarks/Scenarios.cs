@@ -230,6 +230,57 @@ public static class Scenarios
         return message.Length > 160 ? message[..160] + "..." : message;
     }
 
+    /// <summary>
+    /// Rule text an author should not be able to write. Each is only compiled, never run, and each is harmless
+    /// even if it were: the question is whether the engine lets rule text reach beyond the object it was given.
+    /// </summary>
+    private static readonly (string What, string Rule)[] Hostile =
+    [
+        ("Arithmetic", "Order.Id + 1 > 2"),
+        ("Method on a value", "Order.Customer.Name.ToUpper() == \"ADA\""),
+        ("Method that changes the object", "Order.Tags.Remove(\"channel\")"),
+        ("Assignment", "(Order.Customer = null) == null"),
+        ("Static method by full name", "System.IO.File.Exists(\"x\")"),
+        ("Static property by full name", "System.Environment.MachineName == \"x\""),
+        ("Static method, short name", "File.Exists(\"x\")"),
+        ("Start from a static type", "System.Diagnostics.Process.GetCurrentProcess().Id > 0"),
+        ("Create an object", "new System.Text.StringBuilder().Length == 0"),
+        ("GetType()", "Order.GetType().Name == \"Order\""),
+        ("Reflection through GetType()", "Order.GetType().Assembly.GetType(\"System.IO.File\") != null"),
+        ("typeof", "typeof(System.IO.File) != null"),
+        ("A lambda", "Order.Lines.Any(l => l.Qty > 10)"),
+    ];
+
+    /// <summary><c>-- safety</c>: which engines accept which kinds of rule text, in the setups a team would use.</summary>
+    public static void PrintSafety()
+    {
+        var plain = new Interpreter();
+        var locked = new Interpreter(InterpreterOptions.PrimitiveTypes | InterpreterOptions.SystemKeywords).EnableAssignment(AssignmentOperators.None);
+        (string Name, Func<string, object> Compile)[] engines =
+        [
+            ("RebolParse rules sample", text => Sample(text)),
+            ("DynamicExpresso, default", text => plain.ParseAsDelegate<Func<Order, bool>>(text, "Order")),
+            ("DynamicExpresso, lambdas on", text => Expresso(text)),
+            ("DynamicExpresso, locked down", text => locked.ParseAsDelegate<Func<Order, bool>>(text, "Order")),
+            ("Dynamic.Core, default", text => LinqDefault(text)),
+            ("Dynamic.Core, JSON types registered", text => LinqRegistered(text)),
+        ];
+        var notes = new List<string>();
+        Console.WriteLine("| Rule text | " + string.Join(" | ", engines.Select(e => e.Name)) + " |");
+        Console.WriteLine("|---|" + string.Concat(engines.Select(_ => "---|")));
+        foreach (var (what, rule) in Hostile)
+        {
+            var cells = engines.Select(engine =>
+            {
+                try { engine.Compile(rule); return "**accepted**"; }
+                catch (Exception ex) { notes.Add($"- {what}, {engine.Name}: {ex.GetType().Name}: {OneLine(ex.Message)}"); return "refused"; }
+            }).ToList();
+            Console.WriteLine($"| {what}: `{rule}` | " + string.Join(" | ", cells) + " |");
+        }
+        Console.WriteLine();
+        Console.WriteLine(string.Join("\n", notes));
+    }
+
     public static void Print()
     {
         var notes = new List<string>();
