@@ -231,6 +231,36 @@ The C# lambda uses the `MetaJson` helper for JSON, which splits its path on ever
 - **On JSON the sample is level or ahead, and allocates nothing.** It is 1.3 times faster on strings (56 against 74 ns), because it compares the JSON text in place where `GetString()` makes a string, level on the mixed rule, and 1.6 times faster than the libraries calling a helper. It is 1.2 times slower on a lone number (66 against 54 ns), where it reads a `double` and the libraries' rule asks for an `int`. It looks names up by their UTF-8 bytes, encoded once when the rule is compiled.
 - **On plain objects null safety now costs little.** The guarded deep path ties the libraries. List items are 2.9 ns against 1.5: the sample checks the list is there and long enough, and compares `int?` values, where the libraries index it and would throw.
 
+### Stress run: 20,000 orders
+
+One pass over 20,000 different orders, each with its own parsed `JsonDocument`, for the six rules above and for all six together (120,000 checks). The time is for the whole pass. **Clean** data has every field filled, so the libraries call `JsonElement` methods directly. **Messy** data has nulls, short lists, missing metadata and wrong types in 5 to 25% of the orders, which would make those calls throw, so there the libraries read JSON through the registered `MetaJson` helper. The sample runs the same rule text on both. Every engine must agree with a C# lambda about every order before anything is timed.
+
+**Clean data**, one pass over 20,000 orders:
+
+| | Guarded deep path | List count, two items | JSON number | JSON nested string | JSON and properties | JSON through a helper | All six |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| RebolParse rules sample | 0.14 ms | 0.38 ms | 2.3 ms | 2.6 ms | 3.3 ms | 4.3 ms | **7.4 ms** |
+| DynamicExpresso | 0.17 ms | 0.28 ms | 2.4 ms | 3.6 ms | 3.4 ms | 5.1 ms | **8.8 ms**, 3.3 MB |
+| System.Linq.Dynamic.Core | 0.16 ms | 0.28 ms | 2.2 ms | 3.5 ms | 3.2 ms | 5.2 ms | **8.9 ms**, 3.3 MB |
+| Lambda written in C#, JSON via the helper | 0.12 ms | 0.14 ms | 2.9 ms | 4.3 ms | 3.8 ms | 5.1 ms | **11.6 ms**, 8.6 MB |
+
+**Messy data**, one pass over 20,000 orders:
+
+| | Guarded deep path | List count, two items | JSON number | JSON nested string | JSON and properties | JSON through a helper | All six |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| RebolParse rules sample | 0.11 ms | 0.21 ms | 2.2 ms | 2.3 ms | 2.7 ms | 2.7 ms | **6.6 ms** |
+| DynamicExpresso | 0.13 ms | 0.12 ms | 2.4 ms | 3.6 ms | 3.4 ms | 3.5 ms | **9.8 ms**, 7.6 MB |
+| System.Linq.Dynamic.Core | 0.13 ms | 0.13 ms | 2.3 ms | 3.5 ms | 3.3 ms | 3.5 ms | **9.6 ms**, 7.6 MB |
+| Lambda written in C#, JSON via the helper | 0.10 ms | 0.12 ms | 2.5 ms | 3.5 ms | 3.3 ms | 3.6 ms | **9.7 ms**, 7.6 MB |
+
+- **20,000 orders against six rules takes 7 to 10 ms** on one core, whichever engine runs them. That is 50 to 80 ns a check on average, or roughly 2 to 3 million orders a second for this rule set.
+- **JSON is nearly all of it.** A rule on plain properties covers 20,000 orders in 0.1 to 0.4 ms (5 to 20 ns each); a rule that reads metadata takes 2 to 5 ms (110 to 260 ns each).
+- **Real data is slower than the single-object tables suggest**, by 1.5 to 4 times. There one or two orders stayed in the processor's cache; here each order and its JSON are somewhere else in memory. Use these figures for capacity planning, not the nanosecond ones.
+- **The sample is fastest on the full set and allocates nothing**: 7.4 against 8.8 ms on clean data, 6.6 against 9.7 on messy. The libraries allocate 3 to 8 MB a pass, from `GetString()` and from the helper splitting its path. The sample trails only on the list rule.
+- **Compiling the six rules is a one-off of about 1 ms** with .NET's compiler, so it stops mattering after the first few hundred orders.
+
+These are short runs, and the error bars on the single-rule columns are wide (often 30 to 100% of the figure), so read differences under about 1.5 times as noise. The all-six column is steadier.
+
 ## Run it
 
 ```bash
@@ -238,6 +268,7 @@ dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*StripDigits*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*JsonLookup*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRule*" --job short
+dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRuleStress*" --job short   # 20,000 orders
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- scenarios     # the deep-object and JSON table, with every rule text
 ```
 
