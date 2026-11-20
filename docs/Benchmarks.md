@@ -125,7 +125,8 @@ The [`rules` sample](../samples/Samples/RuleDemo.cs) turns text like `Person.Age
 | System.Linq.Dynamic.Core | 0.4 ns | 3.1 ns |
 | DynamicExpresso, typed delegate | 0.4 ns | 3.5 ns |
 | System.Linq.Dynamic.Core + FastExpressionCompiler | 0.6 ns | 3.9 ns |
-| RebolParse rules sample | 0.9 ns | 3.9 ns |
+| RebolParse rules sample | 0.8 ns | 3.9 ns |
+| RebolParse rules sample + FastExpressionCompiler | 0.6 ns | 4.2 ns |
 | DynamicExpresso, `Lambda.Invoke` | 308 ns, 784 B | 312 ns, 784 B |
 | RulesEngine | 474 ns, 1.6 KB | 476 ns, 1.6 KB |
 
@@ -133,15 +134,18 @@ The [`rules` sample](../samples/Samples/RuleDemo.cs) turns text like `Person.Age
 
 | | Simple | Nested | Allocated (Simple, Nested) |
 |---|---:|---:|---:|
-| System.Linq.Dynamic.Core + FastExpressionCompiler | 15 µs | 71 µs | 25 KB, 139 KB |
+| RebolParse rules sample, tree only (not compiled) | 1.7 µs | 3.3 µs | 2 KB, 5 KB |
+| RebolParse rules sample + FastExpressionCompiler | 6.2 µs | 13 µs | 7 KB, 16 KB |
+| System.Linq.Dynamic.Core + FastExpressionCompiler | 15 µs | 70 µs | 25 KB, 137 KB |
 | RebolParse rules sample | 66 µs | 221 µs | 7 KB, 12 KB |
 | System.Linq.Dynamic.Core | 73 µs | 269 µs | 24 KB, 131 KB |
 | DynamicExpresso | 95 µs | 265 µs | 55 KB, 90 KB |
 | RulesEngine (build an engine and run it once) | 2,504 µs | 2,753 µs | 217 KB, 333 KB |
 
-- **Once compiled, they all cost the same as C#.** Every one of them ends in a JIT-compiled delegate, so a check is a few nanoseconds. Figures under 1 ns are at the limit of what can be measured, and the differences between the first five rows are not meaningful. The sample's extra half nanosecond is the wrapper that refuses a null object.
+- **Once compiled, they all cost the same as C#.** Every one of them ends in a JIT-compiled delegate, so a check is a few nanoseconds. Figures under 1 ns are at the limit of what can be measured, and the differences between the first six rows are not meaningful. The sample's extra half nanosecond is the wrapper that refuses a null object.
 - **Call the typed delegate.** `Lambda.Invoke` boxes its arguments and calls dynamically, which is about 100 times slower on the nested rule. RulesEngine builds a result tree for every check, which costs about the same.
-- **Compiling is 10,000 times dearer than checking, so cache the delegate.** Most of the compile time is .NET turning the expression tree into IL, which is why FastExpressionCompiler cuts it by 4 to 5 times and why three different parsers land close together.
+- **Compiling is 10,000 times dearer than checking, so cache the delegate.** Most of the compile time is .NET turning the expression tree into IL, which is why three different parsers land close together. The sample reads and type-checks a rule in 2 to 3 µs; the other 64 to 217 µs is `Expression.Compile`.
+- **FastExpressionCompiler removes most of that.** `RuleDemo.ToExpression` returns the tree, and `CompileFast()` on it takes 6 to 13 µs in all, 10 to 17 times faster than the sample's own `Compile` and 2 to 5 times faster than Dynamic.Core with the same compiler. The benchmark fails if FastExpressionCompiler falls back to .NET's compiler, and it did not.
 - **Use a library unless you need the narrow surface.** The sample is competitive but does less: no method calls, no arithmetic. That is the point of it when rule authors are not trusted, and a limit otherwise.
 
 ## Run it

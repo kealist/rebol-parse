@@ -78,10 +78,20 @@ public sealed class RuleDemo : IDemo
     public Func<T, bool> Compile<T>(string text, string? name = null)
     {
         name ??= typeof(T).Name;
+        var check = ToExpression<T>(text, name).Compile();
+        return item => item is null ? throw new ArgumentNullException(name) : check(item);
+    }
+
+    /// <summary>
+    /// The rule as an expression tree, for a caller that wants to compile it another way or hand it to a query
+    /// provider. Unlike <see cref="Compile"/>, the tree does not check that the object itself is not null.
+    /// </summary>
+    public Expression<Func<T, bool>> ToExpression<T>(string text, string? name = null)
+    {
+        name ??= typeof(T).Name;
         var tree = Read(text);
         var root = Expression.Parameter(typeof(T), name);
-        var check = Expression.Lambda<Func<T, bool>>(new Builder(root, name).Condition(tree), root).Compile();
-        return item => item is null ? throw new ArgumentNullException(name) : check(item);
+        return Expression.Lambda<Func<T, bool>>(new Builder(root, name).Condition(tree), root);
     }
 
     private Node Read(string text)

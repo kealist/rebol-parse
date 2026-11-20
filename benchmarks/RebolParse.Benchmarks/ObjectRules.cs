@@ -32,6 +32,11 @@ internal static class RuleTexts
     public static readonly RuleDemo Demo = new();
     public static readonly Interpreter Expresso = new();
 
+    /// <summary>The sample's own expression tree compiled by FastExpressionCompiler. Throws if it had to fall back to .NET's compiler.</summary>
+    public static Func<Person, bool> DemoFast(string text) =>
+        Demo.ToExpression<Person>(text).CompileFast(ifFastFailedReturnNull: true)
+        ?? throw new InvalidOperationException("FastExpressionCompiler could not compile the rule");
+
     public static LambdaExpression DynamicLinq(string text) =>
         DynamicExpressionParser.ParseLambda([Expression.Parameter(typeof(Person), "Person")], typeof(bool), text);
 
@@ -60,7 +65,7 @@ public class ObjectRuleCheck
     [Params("Simple", "Nested")] public string Rule = "Simple";
 
     private Person person = RuleTexts.People[0];
-    private Func<Person, bool> handwritten = null!, rebolParse = null!, expresso = null!, dynamicLinq = null!, dynamicLinqFast = null!;
+    private Func<Person, bool> handwritten = null!, rebolParse = null!, rebolParseFast = null!, expresso = null!, dynamicLinq = null!, dynamicLinqFast = null!;
     private Lambda expressoLambda = null!;
     private RulesEngine.RulesEngine engine = null!;
 
@@ -70,6 +75,7 @@ public class ObjectRuleCheck
         var text = RuleTexts.For(Rule);
         handwritten = RuleTexts.Handwritten(Rule);
         rebolParse = RuleTexts.Demo.Compile<Person>(text);
+        rebolParseFast = RuleTexts.DemoFast(text);
         expresso = RuleTexts.Expresso.ParseAsDelegate<Func<Person, bool>>(text, "Person");
         expressoLambda = RuleTexts.Expresso.Parse(text, new Parameter("Person", typeof(Person)));
         dynamicLinq = (Func<Person, bool>)RuleTexts.DynamicLinq(text).Compile();
@@ -83,7 +89,7 @@ public class ObjectRuleCheck
             person = p;
             (string Name, bool Got)[] answers =
             [
-                ("RebolParse", rebolParse(p)), ("DynamicExpresso", expresso(p)), ("DynamicExpresso Invoke", DynamicExpressoInvoke()),
+                ("RebolParse", rebolParse(p)), ("RebolParse fast", rebolParseFast(p)), ("DynamicExpresso", expresso(p)), ("DynamicExpresso Invoke", DynamicExpressoInvoke()),
                 ("Dynamic.Core", dynamicLinq(p)), ("Dynamic.Core fast", dynamicLinqFast(p)), ("RulesEngine", MicrosoftRulesEngine().Result),
             ];
             foreach (var (name, got) in answers)
@@ -94,6 +100,8 @@ public class ObjectRuleCheck
 
     [Benchmark(Baseline = true)] public bool Handwritten() => handwritten(person);
     [Benchmark] public bool RebolParseRules() => rebolParse(person);
+    /// <summary>No wrapper that refuses a null object, so this is one delegate call, not two.</summary>
+    [Benchmark] public bool RebolParseRulesCompileFast() => rebolParseFast(person);
     [Benchmark] public bool DynamicExpresso() => expresso(person);
     /// <summary>The untyped call: arguments are boxed into an array and the delegate is invoked dynamically.</summary>
     [Benchmark] public bool DynamicExpressoInvoke() => (bool)expressoLambda.Invoke(person);
@@ -114,6 +122,9 @@ public class ObjectRuleCompile
     public void Setup() => text = RuleTexts.For(Rule);
 
     [Benchmark(Baseline = true)] public Func<Person, bool> RebolParseRules() => RuleTexts.Demo.Compile<Person>(text);
+    [Benchmark] public Func<Person, bool> RebolParseRulesCompileFast() => RuleTexts.DemoFast(text);
+    /// <summary>Reading the text and checking it against the type, without compiling: what is left when the IL step is taken out.</summary>
+    [Benchmark] public Expression<Func<Person, bool>> RebolParseRulesTreeOnly() => RuleTexts.Demo.ToExpression<Person>(text);
     [Benchmark] public Func<Person, bool> DynamicExpresso() => RuleTexts.Expresso.ParseAsDelegate<Func<Person, bool>>(text, "Person");
     [Benchmark] public Func<Person, bool> DynamicLinq() => (Func<Person, bool>)RuleTexts.DynamicLinq(text).Compile();
     [Benchmark] public Func<Person, bool> DynamicLinqCompileFast() => (Func<Person, bool>)RuleTexts.DynamicLinq(text).CompileFast();
