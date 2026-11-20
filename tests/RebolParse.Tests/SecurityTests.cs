@@ -40,21 +40,35 @@ public class SecurityTests
     private static readonly Dictionary<string, Rule> Groups = Dialect.ReadGrammar("g = \"(\" any g \")\"");
     private static readonly string DeepGroups = new string('(', Deep) + new string(')', Deep);
 
+    /// <summary>
+    /// Run <paramref name="test"/> on a thread with a 1 MB stack. Whether deep input runs out of stack depends on how
+    /// much stack the thread has, and the default differs by machine: with the 16 MB a GitHub runner gives, a compiled
+    /// rule gets through 200,000 levels and correctly throws nothing.
+    /// </summary>
+    private static void OnSmallStack(Action test)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() => { try { test(); } catch (Exception ex) { failure = ex; } }, 1024 * 1024);
+        thread.Start();
+        thread.Join();
+        if (failure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
     [Fact]
-    public void Deeply_nested_input_throws_instead_of_overflowing_the_stack()
+    public void Deeply_nested_input_throws_instead_of_overflowing_the_stack() => OnSmallStack(() =>
     {
         Assert.Throws<InsufficientExecutionStackException>(() => Parser.IsMatch(DeepGroups, new Ref("g"), Groups));
         Assert.Throws<InsufficientExecutionStackException>(() => Parser.Parse(DeepGroups, new Ref("g"), Groups));
         Assert.True(Parser.IsMatch("(()(()))", new Ref("g"), Groups));
-    }
+    });
 
     [Fact]
-    public void Deeply_nested_input_throws_in_compiled_rules_too()
+    public void Deeply_nested_input_throws_in_compiled_rules_too() => OnSmallStack(() =>
     {
         var compiled = Groups.ToDictionary(d => d.Key, d => (Rule)d.Value.Compiled());
         Assert.Throws<InsufficientExecutionStackException>(() => Parser.IsMatch(DeepGroups, new Ref("g"), compiled));
         Assert.True(Parser.IsMatch("(()(()))", new Ref("g"), compiled));
-    }
+    });
 
     [Fact]
     public void Left_recursion_throws_instead_of_overflowing_the_stack()
@@ -67,13 +81,13 @@ public class SecurityTests
     }
 
     [Fact]
-    public void Deeply_nested_blocks_throw_instead_of_overflowing_the_stack()
+    public void Deeply_nested_blocks_throw_instead_of_overflowing_the_stack() => OnSmallStack(() =>
     {
         object block = new List<object>();
         for (var i = 0; i < Deep; i++) block = new List<object> { block };
         var grammar = Dialect.ReadGrammar("g = into [any g]");
         Assert.Throws<InsufficientExecutionStackException>(() => Parser.IsMatch(new List<object> { block }, new Ref("g"), grammar));
-    }
+    });
 
     // ---- shared rules ----
 
