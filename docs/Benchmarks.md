@@ -204,7 +204,18 @@ An `Order` with a customer, an employer and its parent company, a list of lines,
 - **Dynamic.Core refuses method calls on types it was not told about**, so out of the box no JSON rule compiles. Registering `JsonDocument` and `JsonElement` with a custom type provider fixes that. This is its protection against rule text calling arbitrary code, and DynamicExpresso does not have it.
 - **The sample cannot say three things the libraries can**: a condition over every item of a list, a method call, and arithmetic.
 
-**Checking one order**, for the rules every engine can run, averaged over the full and the other order.
+**Checking one order**, for the rules every engine can run, averaged over the full and the other order. Each column is one rule. The sample reads the first text; where the libraries need a different spelling, it follows.
+
+| Column | The rule | What it exercises |
+|---|---|---|
+| Guarded deep path | `Order.Customer.Employer.Parent.Address.City == "Oslo"`<br>DynamicExpresso: `Order.Customer.Employer?.Parent?.Address?.City == "Oslo"`<br>Dynamic.Core: `np(Order.Customer.Employer.Parent.Address.City) == "Oslo"` | Five property reads through objects that may be null |
+| List count, two items | `Order.Lines.Count >= 2 && Order.Lines[0].Qty > Order.Lines[1].Qty` | A `List<T>` property, its count, and two items by position |
+| JSON number | `Order.Metadata.priority >= 3`<br>Libraries: `Order.Metadata.RootElement.GetProperty("priority").GetInt32() >= 3` | One top-level number in the metadata `{"priority": 5, ...}` |
+| JSON nested string | `Order.Metadata.customer.segment == "enterprise"`<br>Libraries: `Order.Metadata.RootElement.GetProperty("customer").GetProperty("segment").GetString() == "enterprise"` | Two JSON lookups, then a string comparison, in `{"customer": {"segment": "enterprise"}}` |
+| JSON and properties | `Order.Metadata.customer.score > 80 && Order.Customer.Tier == "Gold" && Order.Lines.Count > 1`<br>Libraries: `...GetProperty("customer").GetProperty("score").GetDouble() > 80 && Order.Customer.Tier == Tier.Gold && Order.Lines.Count > 1` | A realistic mix: a nested JSON number, an enum and a list count |
+| JSON through a helper | `Order.Metadata.customer.score > 80 && Order.Metadata.source == "web"`<br>Libraries: `MetaJson.Num(Order.Metadata, "customer.score") > 80 && MetaJson.Str(Order.Metadata, "source") == "web"` | The null-safe way to read JSON from the libraries: a helper you write and register, which takes a dotted path |
+
+A figure such as "74 ns, 40 B" means one check took 74 nanoseconds and allocated 40 bytes; no byte figure means nothing was allocated.
 
 | | Guarded deep path | List count, two items | JSON number | JSON nested string | JSON and properties | JSON through a helper |
 |---|---:|---:|---:|---:|---:|---:|
