@@ -51,6 +51,7 @@ public static class Demos
     public static IReadOnlyList<IDemo> All { get; } =
     [
         new Calculator(),
+        new RuleDemo(),
         new JsonDemo(),
         new IniDemo(),
         new CsvDemo(),

@@ -1,6 +1,6 @@
 # Samples
 
-Eight small programs, each built from a parse grammar plus a few lines of C#. They print what they do and check their own results, so `dotnet test` runs all of them and they cannot go stale.
+Nine small programs, each built from a parse grammar plus a few lines of C#. They print what they do and check their own results, so `dotnet test` runs all of them and they cannot go stale.
 
 ```bash
 dotnet run --project samples/Samples              # run everything
@@ -12,6 +12,7 @@ dotnet run -c Release --project samples/Samples -- clean   # timings are only me
 | Demo | File | What it shows |
 |---|---|---|
 | `calc` | [Calculator.cs](Samples/Calculator.cs) | A recursive grammar written as `name = rule` text. Actions fire as each piece matches and drive a value stack, so the parse evaluates as it goes. Error positions come from a partial parse. |
+| `rules` | [RuleDemo.cs](Samples/RuleDemo.cs) | Validation rules for objects: `Person.Age > 18 && Person.Job == "SE"` is read into a small tree, checked against the type's real properties, and compiled to a `Func<Person, bool>`. Null-safe paths, enums by name, and mistakes reported when the rule is compiled. |
 | `json` | [JsonDemo.cs](Samples/JsonDemo.cs) | A complete JSON reader and writer. Actions build values on a stack, with a marker pushed when an array or object opens. Includes path queries (`author.name`, `tags[1]`) written as a parse rule, and rejects a dozen kinds of malformed input. |
 | `ini` | [IniDemo.cs](Samples/IniDemo.cs) | Parsing one line at a time, so an error names its line and the rest of the file still loads. Comments, quoted values, typed lookups. |
 | `csv` | [CsvDemo.cs](Samples/CsvDemo.cs) | RFC 4180: quoted fields holding commas, doubled quotes and line breaks, then a small report built from the rows. |
@@ -24,6 +25,6 @@ dotnet run -c Release --project samples/Samples -- clean   # timings are only me
 
 - **Rules decide, actions do.** Keep the grammar free of logic and let `(@name)` actions collect values. Actions run as soon as their piece matches, so put them after the part that can fail.
 - **Backtracking does not undo actions.** Every demo relies on grammars where a branch only fires an action once it can no longer fail, or where a failure means the whole input is rejected anyway. See [what is undone](../docs/Reference.md#what-is-undone-when-a-branch-fails).
-- **Build rules once.** Each demo reads its grammar in the constructor and reuses it, so the rule compiles one time. Seven of the eight also call `.Compiled()` on the grammar, which generates IL the first time it runs. The `clean` demo, which edits a few megabytes of text, takes about 110 ms that way and about 310 ms interpreted. The `robot` demo works on lists, which always use the interpreter.
+- **Build rules once.** Each demo reads its grammar in the constructor and reuses it, so the rule compiles one time. Eight of the nine also call `.Compiled()` on the grammar, which generates IL the first time it runs. The `clean` demo, which edits a few megabytes of text, takes about 110 ms that way and about 310 ms interpreted. The `robot` demo works on lists, which always use the interpreter.
 - **Locate errors with a partial parse.** When a full parse fails, `Parser.Parse(text, rule, partial: true).Position` is how far a valid prefix went.
 - **Capture variables are shared.** `copy x` writes into one table for the whole parse, so read the value in an action right away, as the calculator and JSON demos do, rather than after a nested rule might have set it again.

@@ -170,7 +170,7 @@ Compile once and reuse the result. The first compile in a process takes about 30
 | [Reference](docs/Reference.md) | Every keyword, the text syntax, grammars, results, errors, backtracking, compiling to IL, and limits. |
 | [Benchmarks](docs/Benchmarks.md) | Numbers against .NET `Regex` and `System.Text.Json`, interpreted and compiled. |
 | [Architecture](docs/Architecture.md) | For contributors: how the engines, compiler and tests work, and how to add a keyword. |
-| [Samples](samples/README.md) | Eight runnable programs: a calculator, a JSON reader, INI, CSV, log analysis, a source cleaner, a block-mode robot language, and a template engine. |
+| [Samples](samples/README.md) | Nine runnable programs: a calculator, object validation rules, a JSON reader, INI, CSV, log analysis, a source cleaner, a block-mode robot language, and a template engine. |
 
 The public API has XML doc comments, so IntelliSense shows what each keyword does.
 
