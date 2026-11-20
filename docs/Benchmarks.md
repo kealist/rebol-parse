@@ -148,6 +148,36 @@ The [`rules` sample](../samples/Samples/RuleDemo.cs) turns text like `Person.Age
 - **FastExpressionCompiler removes most of that.** `RuleDemo.ToExpression` returns the tree, and `CompileFast()` on it takes 6 to 13 µs in all, 10 to 17 times faster than the sample's own `Compile` and 2 to 5 times faster than Dynamic.Core with the same compiler. The benchmark fails if FastExpressionCompiler falls back to .NET's compiler, and it did not.
 - **Use a library unless you need the narrow surface.** The sample is competitive but does less: no method calls, no arithmetic. That is the point of it when rule authors are not trusted, and a limit otherwise.
 
+### Larger rules and varied objects
+
+The two rules above are small and were checked against one person who passes. These tables use generated rules of 1 to 64 comparisons over ints, strings, decimals, doubles, a bool and nested properties, joined as an OR of four-clause AND chains, and check them against 1,000 varied people, so some pass and some fail on the first clause. The engines must agree about every person before anything is timed.
+
+**Checking**, time per person. Nothing allocates.
+
+| Comparisons in the rule | 1 | 4 | 16 | 64 |
+|---|---:|---:|---:|---:|
+| System.Linq.Dynamic.Core | 1.9 ns | 3.9 ns | 6.4 ns | 13.6 ns |
+| DynamicExpresso | 1.9 ns | 3.9 ns | 6.4 ns | 13.7 ns |
+| System.Linq.Dynamic.Core + FastExpressionCompiler | 2.2 ns | 4.4 ns | 7.0 ns | 16.3 ns |
+| RebolParse rules sample | 1.9 ns | 4.1 ns | 7.9 ns | 18.8 ns |
+| RebolParse rules sample + FastExpressionCompiler | 2.2 ns | 4.6 ns | 9.6 ns | 23.2 ns |
+
+**Compiling** one rule from text.
+
+| Comparisons in the rule | 1 | 4 | 16 | 64 |
+|---|---:|---:|---:|---:|
+| RebolParse rules sample, tree only (not compiled) | 1.0 µs | 3.2 µs | 14 µs | 55 µs |
+| RebolParse rules sample + FastExpressionCompiler | 3.4 µs | 12 µs | 46 µs | 167 µs |
+| System.Linq.Dynamic.Core + FastExpressionCompiler | 8.8 µs | 70 µs | 183 µs | 674 µs |
+| RebolParse rules sample | 25 µs | 230 µs | 806 µs | 3,829 µs |
+| System.Linq.Dynamic.Core | 30 µs | 269 µs | 729 µs | 3,143 µs |
+| DynamicExpresso | 49 µs | 274 µs | 843 µs | 3,704 µs |
+
+- **The compile-time result holds at every size.** With FastExpressionCompiler the sample is 7 to 23 times faster than with .NET's compiler, and 2.6 to 5.7 times faster than Dynamic.Core with the same compiler. With .NET's compiler all three cost the same, 3 to 4 ms for a 64-comparison rule.
+- **The per-check result does not.** On small rules everything ties. On large ones the two libraries are about 1.4 times faster than the sample (13.6 against 18.8 ns at 64 comparisons). The likely cause is the sample's null-safe paths: `Person.Address.Zip` becomes an `int?` behind a null check where the libraries read the field directly and would throw on a null address. That was not measured separately.
+- **FastExpressionCompiler's code is 10 to 25% slower to run** than .NET's on these rules, for both parsers. It trades a little speed per check for a much faster compile, which pays when rules are compiled often or there are thousands of them, and loses when a few rules check millions of objects.
+- **The sample allocates far less while compiling**: 127 KB for the 64-comparison rule against 1.1 to 1.6 MB for the libraries.
+
 ## Run it
 
 ```bash

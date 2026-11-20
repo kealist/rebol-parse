@@ -12,7 +12,7 @@ namespace RebolParse.Benchmarks;
 public sealed record Address(string City, int Zip);
 
 /// <inheritdoc cref="Address"/>
-public sealed record Person(string Name, int Age, string Job, decimal Salary, Address Address);
+public sealed record Person(string Name, int Age, string Job, decimal Salary, Address Address, double Height = 1.7, bool Remote = false);
 
 /// <summary>The rule texts and the ways to turn one into a <c>Func&lt;Person, bool&gt;</c>, shared by both benchmark classes.</summary>
 internal static class RuleTexts
@@ -24,6 +24,40 @@ internal static class RuleTexts
         "Nested" => "Person.Age >= 18 && (Person.Job == \"PM\" || Person.Address.City == \"London\") && Person.Salary > 50000",
         _ => throw new ArgumentException(rule),
     };
+
+    /// <summary>
+    /// A rule of <paramref name="clauses"/> comparisons over ints, strings, decimals, doubles, a bool and nested
+    /// properties, joined so that it is an OR of four-clause AND chains. Every library reads the same text.
+    /// </summary>
+    public static string Generated(int clauses)
+    {
+        static string Clause(int i) => (i % 8) switch
+        {
+            0 => $"Person.Age > {18 + i % 30}",
+            1 => "Person.Job == \"SE\"",
+            2 => $"Person.Salary >= {30000 + i * 500}",
+            3 => "Person.Address.City != \"Leeds\"",
+            4 => $"Person.Address.Zip < {20000 + i * 100}",
+            5 => "!Person.Remote",
+            6 => "Person.Height > 1.6",
+            _ => $"!(Person.Age < {10 + i % 5} || Person.Job == \"QA\")",
+        };
+        var text = new System.Text.StringBuilder();
+        for (var i = 0; i < clauses; i++) text.Append(i == 0 ? "" : i % 4 == 0 ? " || " : " && ").Append(Clause(i));
+        return text.ToString();
+    }
+
+    /// <summary>A thousand varied people, the same every run, so rules pass for some and fail early for others.</summary>
+    public static readonly Person[] Crowd = MakeCrowd();
+
+    private static Person[] MakeCrowd()
+    {
+        var random = new Random(42);
+        string[] jobs = ["SE", "PM", "QA", "OPS"], cities = ["London", "Leeds", "Tampa", "Oslo"];
+        return [.. Enumerable.Range(0, 1000).Select(i => new Person($"P{i}", random.Next(12, 70), jobs[random.Next(4)],
+            random.Next(20_000, 200_000), new Address(cities[random.Next(4)], random.Next(1000, 40_000)),
+            1.5 + random.NextDouble() * 0.5, random.Next(2) == 0))];
+    }
 
     public static Func<Person, bool> Handwritten(string rule) => rule == "Simple"
         ? p => p.Age > 18 && p.Job == "SE"
@@ -131,4 +165,68 @@ public class ObjectRuleCompile
     /// <summary>RulesEngine compiles a rule the first time it runs, so this builds an engine and runs it once.</summary>
     [Benchmark] public async Task<bool> MicrosoftRulesEngine() =>
         (await RuleTexts.Engine(text).ExecuteAllRulesAsync("check", new RuleParameter("Person", RuleTexts.People[0])))[0].IsSuccess;
+}
+
+/// <summary>The engines that compile to a typed delegate, on generated rules of growing size. Shared by the two classes below.</summary>
+public abstract class ObjectRuleScale
+{
+    /// <summary>How many comparisons the rule holds.</summary>
+    [Params(1, 4, 16, 64)] public int Clauses = 1;
+
+    protected string Text = "";
+
+    protected Func<Person, bool> RebolParse() => RuleTexts.Demo.Compile<Person>(Text);
+    protected Func<Person, bool> RebolParseFast() => RuleTexts.DemoFast(Text);
+    protected Func<Person, bool> Expresso() => RuleTexts.Expresso.ParseAsDelegate<Func<Person, bool>>(Text, "Person");
+    protected Func<Person, bool> Linq() => (Func<Person, bool>)RuleTexts.DynamicLinq(Text).Compile();
+    protected Func<Person, bool> LinqFast() =>
+        (Func<Person, bool>)(RuleTexts.DynamicLinq(Text).CompileFast(ifFastFailedReturnNull: true)
+                             ?? throw new InvalidOperationException("FastExpressionCompiler could not compile the rule"));
+}
+
+/// <summary>Checking a thousand varied people against one compiled rule; the time is per person.</summary>
+[MemoryDiagnoser]
+public class ObjectRuleScaleCheck : ObjectRuleScale
+{
+    private Func<Person, bool> rebolParse = null!, rebolParseFast = null!, expresso = null!, linq = null!, linqFast = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        Text = RuleTexts.Generated(Clauses);
+        (rebolParse, rebolParseFast, expresso, linq, linqFast) = (RebolParse(), RebolParseFast(), Expresso(), Linq(), LinqFast());
+        foreach (var p in RuleTexts.Crowd)
+            if (new[] { rebolParseFast(p), expresso(p), linq(p), linqFast(p) }.Any(answer => answer != rebolParse(p)))
+                throw new InvalidOperationException($"the engines disagree about {p} on the {Clauses}-clause rule");
+        var passed = Count(rebolParse);
+        if (passed is 0 or 1000) throw new InvalidOperationException($"the {Clauses}-clause rule gives everyone the same answer, so it measures nothing");
+    }
+
+    private static int Count(Func<Person, bool> check)
+    {
+        var passed = 0;
+        foreach (var p in RuleTexts.Crowd) if (check(p)) passed++;
+        return passed;
+    }
+
+    [Benchmark(Baseline = true, OperationsPerInvoke = 1000)] public int RebolParseRules() => Count(rebolParse);
+    [Benchmark(OperationsPerInvoke = 1000)] public int RebolParseRulesCompileFast() => Count(rebolParseFast);
+    [Benchmark(OperationsPerInvoke = 1000)] public int DynamicExpresso() => Count(expresso);
+    [Benchmark(OperationsPerInvoke = 1000)] public int DynamicLinq() => Count(linq);
+    [Benchmark(OperationsPerInvoke = 1000)] public int DynamicLinqCompileFast() => Count(linqFast);
+}
+
+/// <summary>Compiling one generated rule from text.</summary>
+[MemoryDiagnoser]
+public class ObjectRuleScaleCompile : ObjectRuleScale
+{
+    [GlobalSetup]
+    public void Setup() => Text = RuleTexts.Generated(Clauses);
+
+    [Benchmark(Baseline = true)] public Func<Person, bool> RebolParseRules() => RebolParse();
+    [Benchmark] public Func<Person, bool> RebolParseRulesCompileFast() => RebolParseFast();
+    [Benchmark] public Expression<Func<Person, bool>> RebolParseRulesTreeOnly() => RuleTexts.Demo.ToExpression<Person>(Text);
+    [Benchmark] public Func<Person, bool> DynamicExpresso() => Expresso();
+    [Benchmark] public Func<Person, bool> DynamicLinq() => Linq();
+    [Benchmark] public Func<Person, bool> DynamicLinqCompileFast() => LinqFast();
 }
