@@ -169,6 +169,7 @@ Compile once and reuse the result. The first compile in a process takes about 30
 | [Tutorial](docs/Tutorial.md) | Sixteen lessons with exercises, from a first rule to an INI parser and compiling to IL. Start here if you are new to parse. |
 | [Reference](docs/Reference.md) | Every keyword, the text syntax, grammars, results, errors, backtracking, compiling to IL, and limits. |
 | [Benchmarks](docs/Benchmarks.md) | Numbers against .NET `Regex` and `System.Text.Json`, interpreted and compiled. |
+| [Object rules](docs/ObjectRules.md) | The `rules` sample, which compiles `Person.Age > 18 && Person.Job == "SE"` to a delegate, against DynamicExpresso, System.Linq.Dynamic.Core and RulesEngine: what each can express, what rule text can call, and speed. |
 | [Architecture](docs/Architecture.md) | For contributors: how the engines, compiler and tests work, and how to add a keyword. |
 | [Samples](samples/README.md) | Nine runnable programs: a calculator, object validation rules, a JSON reader, INI, CSV, log analysis, a source cleaner, a block-mode robot language, and a template engine. |
 
