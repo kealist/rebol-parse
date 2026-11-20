@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using RebolParse;
 using static RebolParse.P;
@@ -15,7 +16,15 @@ namespace Samples;
 /// <remarks>
 /// A rule can read public properties and fields, and nothing else: it cannot call methods. A property
 /// reached through a null (<c>Person.Address.City</c> with no address) is null instead of an exception,
-/// and a comparison with null is false, except <c>== null</c> and <c>!= null</c>.
+/// and a comparison with null is false, except that null equals null (so <c>== null</c> works, and two
+/// missing values are equal).
+/// <para>
+/// A path can also step into a list by position (<c>Order.Lines[0].Qty</c>), into a dictionary by key
+/// (<c>Order.Tags["channel"]</c>), and into JSON: once a path reaches a <see cref="JsonDocument"/> or
+/// <see cref="JsonElement"/>, the names after it are JSON properties (<c>Order.Metadata.customer.tier</c>,
+/// <c>Order.Metadata["ship-to"].city</c>, <c>Order.Metadata.tags[0]</c>). Anything missing, out of range or
+/// of another type is null, never an exception.
+/// </para>
 /// </remarks>
 public sealed class RuleDemo : IDemo
 {
@@ -24,7 +33,13 @@ public sealed class RuleDemo : IDemo
 
     private abstract record Node;
     private sealed record Lit(object? Value) : Node;                 // 18, "SE", true, null
-    private sealed record Prop(string[] Parts) : Node;               // Person.Address.City
+    private sealed record Key(string Name);                          // the "channel" in Order.Tags["channel"]
+    /// <summary>A path. The first part is the object's name; the rest are member names, list positions (int) and keys.</summary>
+    private sealed record Prop(List<object> Parts) : Node            // Person.Address.City, Order.Lines[0].Qty
+    {
+        public override string ToString() =>
+            string.Concat(Parts.Select((part, i) => part switch { int at => $"[{at}]", Key key => $"[\"{key.Name}\"]", _ => i == 0 ? $"{part}" : $".{part}" }));
+    }
     private sealed record Cmp(string Op, Node Left, Node Right) : Node;
     private sealed record Logic(bool IsAnd, Node Left, Node Right) : Node;
     private sealed record Neg(Node Inner) : Node;
@@ -42,7 +57,11 @@ public sealed class RuleDemo : IDemo
             ["true"] = _ => stack.Push(new Lit(true)),
             ["false"] = _ => stack.Push(new Lit(false)),
             ["null"] = _ => stack.Push(new Lit(null)),
-            ["path"] = c => stack.Push(new Prop(((string)c.Vars["p"]!).Split('.'))),
+            ["root"] = c => stack.Push(new Prop([(string)c.Vars["p"]!])),
+            ["prop"] = c => ((Prop)stack.Peek()).Parts.Add((string)c.Vars["p"]!),
+            ["index"] = c => ((Prop)stack.Peek()).Parts.Add(
+                int.TryParse((string)c.Vars["i"]!, NumberStyles.None, CultureInfo.InvariantCulture, out var at) ? at : throw new FormatException($"the position {c.Vars["i"]} is too large")),
+            ["key"] = _ => { var key = (Lit)stack.Pop(); ((Prop)stack.Peek()).Parts.Add(new Key((string)key.Value!)); },   // the text rule pushed it
             ["compare"] = c => Binary((l, r) => new Cmp((string)c.Vars["op"]!, l, r)),
             ["and"] = _ => Binary((l, r) => new Logic(true, l, r)),
             ["or"] = _ => Binary((l, r) => new Logic(false, l, r)),
@@ -62,7 +81,7 @@ public sealed class RuleDemo : IDemo
             number  = copy n [opt "-" some digit opt ["." some digit]] not idchar (@number)
             text    = "^"" copy s any [not ["^"" | "\"] skip | "\" skip] "^"" (@text)
                     | "'"  copy s any [not ["'"  | "\"] skip | "\" skip] "'"  (@text)
-            path    = copy p [name any ["." name]] (@path)
+            path    = copy p name (@root) any ["." copy p name (@prop) | "[" _ [copy i some digit (@index) | text (@key)] _ "]"]
             name    = charset "a-zA-Z_" any idchar
             idchar  = charset "a-zA-Z0-9_"
             """, actions).Compiled();
@@ -133,7 +152,8 @@ public sealed class RuleDemo : IDemo
             var e = Value(node);
             if (e.Type == typeof(bool)) return e;
             if (e.Type == typeof(bool?)) return Expression.Equal(e, Expression.Constant(true, typeof(bool?)));
-            var what = node is Prop p ? string.Join('.', p.Parts) : Convert.ToString(((Lit)node).Value, CultureInfo.InvariantCulture) ?? "null";
+            if (IsJson(e.Type)) return Expression.Equal(Expression.Call(Json.Bool, e), Expression.Constant(true, typeof(bool?)));   // only JSON true
+            var what = node is Prop p ? p.ToString() : Convert.ToString(((Lit)node).Value, CultureInfo.InvariantCulture) ?? "null";
             throw new FormatException($"'{what}' is not true or false on its own; compare it with something");
         }
 
@@ -150,13 +170,51 @@ public sealed class RuleDemo : IDemo
 
         private Expression Path(Prop path)
         {
-            if (path.Parts[0] != rootName)
-                throw new FormatException($"'{string.Join('.', path.Parts)}' should start with '{rootName}'");
+            if ((string)path.Parts[0] != rootName)
+                throw new FormatException($"'{path}' should start with '{rootName}'");
             // the object itself is never null here: the compiled check refuses a null before it runs
             Expression e = Nullable.GetUnderlyingType(root.Type) != null ? Expression.Property(root, "Value") : root;
-            for (var i = 1; i < path.Parts.Length; i++) e = Access(e, path.Parts[i], nullSafe: i > 1);
+            for (var i = 1; i < path.Parts.Count; i++)
+            {
+                if (IsJson(e.Type))   // inside JSON every step is a lookup at run time
+                {
+                    e = path.Parts[i] is int at
+                        ? Expression.Call(Json.At, e, Expression.Constant(at))
+                        : Expression.Call(Json.Get, e, Expression.Constant(path.Parts[i] is Key key ? key.Name : (string)path.Parts[i]));
+                    continue;
+                }
+                e = path.Parts[i] switch
+                {
+                    int at => Item(e, at, path),
+                    Key key => Lookup(e, key.Name, path),
+                    var name => Access(e, (string)name, nullSafe: i > 1),
+                };
+                // reaching JSON: from here the value is a JsonElement? that is null when there is nothing there
+                if (e.Type == typeof(JsonDocument)) e = Expression.Call(Json.Root, e);
+                else if (Bare(e.Type) == typeof(JsonElement)) e = Expression.Call(Json.Clean, Expression.Convert(e, typeof(JsonElement?)));
+            }
             return e;
         }
+
+        /// <summary><c>list[2]</c> for an array or list. Past the end is null.</summary>
+        private static Expression Item(Expression list, int at, Prop path)
+        {
+            var type = Implements(list.Type, typeof(IReadOnlyList<>))
+                       ?? throw new FormatException($"'{path}': {Show(list.Type)} is not a list, so it has no [{at}]");
+            return Expression.Call(Items.Method("At", type.GetGenericArguments()[0]), list, Expression.Constant(at));
+        }
+
+        /// <summary><c>tags["channel"]</c> for a dictionary with string keys. A missing key is null.</summary>
+        private static Expression Lookup(Expression dictionary, string key, Prop path)
+        {
+            var type = Implements(dictionary.Type, typeof(IReadOnlyDictionary<,>));
+            if (type == null || type.GetGenericArguments()[0] != typeof(string))
+                throw new FormatException($"'{path}': {Show(dictionary.Type)} is not a dictionary with string keys, so it has no [\"{key}\"]");
+            return Expression.Call(Items.Method("Get", type.GetGenericArguments()[1]), dictionary, Expression.Constant(key));
+        }
+
+        private static Type? Implements(Type type, Type generic) =>
+            type.GetInterfaces().Append(type).FirstOrDefault(t => t.IsGenericType && t.GetGenericTypeDefinition() == generic);
 
         /// <summary>Read a public property or field. When the target can be null, so can the result.</summary>
         private static Expression Access(Expression target, string name, bool nullSafe)
@@ -184,6 +242,30 @@ public sealed class RuleDemo : IDemo
 
         private static Expression Compare(string op, Expression left, Expression right)
         {
+            if (IsJson(left.Type) || IsJson(right.Type))
+            {
+                // JSON has no type until it is read, so read it as whatever it is being compared with
+                if (left.Type == right.Type)
+                    throw new FormatException("two JSON values cannot be compared with each other; compare each with a number, a string, true, false or null");
+                var jsonFirst = IsJson(left.Type);
+                var (json, other) = jsonFirst ? (left, right) : (right, left);
+                var equality = op is "==" or "!=";
+                if (IsNullLiteral(other) && equality)
+                    return op == "==" ? Expression.Not(Expression.Property(json, "HasValue")) : Expression.Property(json, "HasValue");
+                if (other is ConstantExpression { Value: string } && equality)   // compares the JSON text in place: no string is made
+                    return op == "==" ? Expression.Call(Json.TextIs, json, other) : Expression.Not(Expression.Call(Json.TextIs, json, other));
+                if (!IsNullLiteral(other))
+                {
+                    var read = other.Type == typeof(string) ? Json.Text
+                        : Bare(other.Type) == typeof(bool) ? Json.Bool
+                        : !IsNumber(other.Type) ? throw new FormatException($"a JSON value cannot be compared with {Show(other.Type)}")
+                        : Type.GetTypeCode(Bare(other.Type)) is TypeCode.Single or TypeCode.Double ? Json.Double
+                        : Json.Decimal;
+                    json = Expression.Call(read, json);
+                    (left, right) = jsonFirst ? (json, other) : (other, json);
+                }
+            }
+
             if (IsNullLiteral(left) != IsNullLiteral(right))
             {
                 var other = IsNullLiteral(left) ? right : left;
@@ -241,17 +323,108 @@ public sealed class RuleDemo : IDemo
                 ? Expression.Constant(Convert.ChangeType(literal, Bare(type), CultureInfo.InvariantCulture), type)
                 : Expression.Convert(e, type);
 
+        private static bool IsJson(Type type) => type == typeof(JsonElement?);
         private static bool IsNullLiteral(Expression e) => e is ConstantExpression { Value: null };
         private static Type Bare(Type type) => Nullable.GetUnderlyingType(type) ?? type;
         private static bool CanBeNull(Type type) => !type.IsValueType || Nullable.GetUnderlyingType(type) != null;
         private static bool IsNumber(Type type) => !Bare(type).IsEnum && Type.GetTypeCode(Bare(type)) is >= TypeCode.SByte and <= TypeCode.Decimal;
-        private static string Show(Type type) => Nullable.GetUnderlyingType(type) is { } bare ? bare.Name + "?" : type.Name;
+        private static string Show(Type type) => Nullable.GetUnderlyingType(type) is { } bare ? bare.Name + "?" : type.Name.Split('`')[0];
+    }
+
+    /// <summary>Reading JSON from a compiled rule. Every method takes and gives null for "nothing there".</summary>
+    private static class Json
+    {
+        public static readonly MethodInfo Root = Of(nameof(RootOf)), Clean = Of(nameof(CleanOf)), Get = Of(nameof(GetOf)), At = Of(nameof(AtOf)),
+            TextIs = Of(nameof(TextIsOf)), Text = Of(nameof(TextOf)), Bool = Of(nameof(BoolOf)), Decimal = Of(nameof(DecimalOf)), Double = Of(nameof(DoubleOf));
+
+        private static MethodInfo Of(string name) => typeof(Json).GetMethod(name)!;
+
+        public static JsonElement? RootOf(JsonDocument? document) => document == null ? null : CleanOf(document.RootElement);
+        /// <summary>JSON null, and a JsonElement that was never set, count as nothing.</summary>
+        public static JsonElement? CleanOf(JsonElement? e) => e is { ValueKind: not (JsonValueKind.Null or JsonValueKind.Undefined) } ? e : null;
+        public static JsonElement? GetOf(JsonElement? e, string name) =>
+            e is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty(name, out var value) ? CleanOf(value) : null;
+        public static JsonElement? AtOf(JsonElement? e, int at) =>
+            e is { ValueKind: JsonValueKind.Array } a && at < a.GetArrayLength() ? CleanOf(a[at]) : null;
+        public static bool TextIsOf(JsonElement? e, string text) => e is { ValueKind: JsonValueKind.String } s && s.ValueEquals(text);
+        public static string? TextOf(JsonElement? e) => e is { ValueKind: JsonValueKind.String } s ? s.GetString() : null;
+        public static bool? BoolOf(JsonElement? e) => e?.ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null };
+        public static decimal? DecimalOf(JsonElement? e) => e is { ValueKind: JsonValueKind.Number } n && n.TryGetDecimal(out var value) ? value : null;
+        public static double? DoubleOf(JsonElement? e) => e is { ValueKind: JsonValueKind.Number } n ? n.GetDouble() : null;
+    }
+
+    /// <summary>Reading lists and dictionaries from a compiled rule without throwing for a missing item.</summary>
+    private static class Items
+    {
+        /// <summary>The <paramref name="name"/> method for items of <paramref name="type"/>: one version gives a T?, the other a Nullable&lt;T&gt;.</summary>
+        public static MethodInfo Method(string name, Type type) =>
+            Nullable.GetUnderlyingType(type) != null ? throw new FormatException($"a list or dictionary of {type.GetGenericArguments()[0].Name}? is not supported")
+                : typeof(Items).GetMethod(name + (type.IsValueType ? "Value" : ""))!.MakeGenericMethod(type);
+
+        public static T? At<T>(IReadOnlyList<T>? list, int at) where T : class => list != null && at < list.Count ? list[at] : null;
+        public static T? AtValue<T>(IReadOnlyList<T>? list, int at) where T : struct => list != null && at < list.Count ? list[at] : null;
+        public static T? Get<T>(IReadOnlyDictionary<string, T>? items, string key) where T : class => items != null && items.TryGetValue(key, out var value) ? value : null;
+        public static T? GetValue<T>(IReadOnlyDictionary<string, T>? items, string key) where T : struct => items != null && items.TryGetValue(key, out var value) ? value : null;
     }
 
     private enum Level { Junior, Senior, Lead }
     private sealed record Address(string City, int Zip);
     private sealed record Person(string Name, int Age, string? Job, Level Level, double Height, decimal Salary,
         bool Remote, Address? Address = null, int? Badge = null);
+
+    private sealed record Line(string Sku, int Qty, decimal Price);
+    private sealed record Order(int Id, Person Buyer, List<Line> Lines, Dictionary<string, string> Tags, int[] Codes,
+        JsonDocument? Metadata, Order? Previous = null);
+
+    /// <summary>Deeper objects: lists, dictionaries, an order that points at another order, and a JSON document of loose metadata.</summary>
+    private void RunOrders(Report r, Person ada, Person tim)
+    {
+        var first = new Order(1, tim, [], [], [], Metadata: null);
+        var full = new Order(2, ada, [new("pen", 12, 1.50m), new("desk", 1, 240m)], new() { ["channel"] = "web" }, [7, 9],
+            JsonDocument.Parse("""
+                {"priority": 5, "source": "web", "gift": true, "ratio": 0.25, "note": null,
+                 "customer": {"segment": "enterprise", "score": 87.5},
+                 "tags": ["rush", "fragile"], "ship-to": {"city": "London"}}
+                """), Previous: first);
+        // the same order with metadata whose values are all the wrong type
+        var odd = full with { Metadata = JsonDocument.Parse("""{"priority": "high", "gift": "yes", "customer": "n/a", "tags": {}, "source": 7}""") };
+
+        (string Rule, bool Full, bool Odd, bool First)[] cases =
+        [
+            ("Order.Lines[0].Qty > 10 && Order.Lines[1].Sku == 'desk'", true, true, false),              // a list by position
+            ("Order.Lines[5].Price > 0 || Order.Codes[9] == 1", false, false, false),                      // past the end is null
+            ("Order.Lines.Count >= 2 && Order.Codes[1] == 9", true, true, false),
+            ("Order.Tags['channel'] == 'web'", true, true, false),                                         // a dictionary by key
+            ("Order.Tags['missing'] == null", true, true, true),
+            ("Order.Previous.Buyer.Age < 18 && Order.Previous.Previous == null", true, true, false),       // an order behind an order
+            ("Order.Lines[0].Price < Order.Lines[1].Price", true, true, false),
+            ("Order.Metadata.priority >= 3", true, false, false),                                          // JSON: a number
+            ("Order.Metadata.source == 'web' && Order.Metadata.source != 'phone'", true, false, false),    // a string
+            ("Order.Metadata.gift && Order.Metadata.ratio < 0.5", true, false, false),                     // true on its own, a fraction
+            ("Order.Metadata.customer.segment == 'enterprise' && Order.Metadata.customer.score > 80", true, false, false),
+            ("Order.Metadata.tags[0] == 'rush' && Order.Metadata.tags[2] == null", true, false, false),    // a JSON array
+            ("Order.Metadata['ship-to'].city == Order.Buyer.Address.City", true, false, true),             // JSON against a property; null == null
+            ("Order.Metadata.note == null && Order.Metadata.nothing.at.all == null", true, true, true),    // JSON null and missing
+            ("Order.Metadata != null && Order.Metadata.priority != 5", false, true, false),                // the wrong type is not 5
+            ("Order.Metadata.priority > 3 && Order.Buyer.Level == 'Lead' && Order.Lines.Count > 1", true, false, false),
+        ];
+        foreach (var (rule, forFull, forOdd, forFirst) in cases)
+        {
+            var check = Compile<Order>(rule);
+            r.Expect($"{rule,-92} full, odd, empty", (check(full), check(odd), check(first)), (forFull, forOdd, forFirst));
+        }
+
+        foreach (var rule in new[]
+                 {
+                     "Order.Id[0] == 1", "Order.Lines['a'] == null", "Order.Tags[0] == 'web'", "Order.Lines[0]", "Order.Lines[99999999999].Qty > 1",
+                     "Order.Metadata.a == Order.Metadata.b", "Order.Metadata.level == Order.Buyer.Level", "Order.Metadata.priority > 'x'",
+                     "Order.Metadata.priority > null", "Order.Lines[0.5].Qty > 1", "Order.Lines[0.Qty > 1",
+                 })
+        {
+            try { Compile<Order>(rule); r.Expect($"'{rule}' is rejected", false); }
+            catch (FormatException ex) { r.Expect($"'{rule}' is rejected", true); r.Say($"'{rule}': {ex.Message}"); }
+        }
+    }
 
     public void Run(Report r)
     {
@@ -295,6 +468,8 @@ public sealed class RuleDemo : IDemo
         r.Expect("the object can have another name", Compile<Person>("p.Age > 18", "p")(ada), true);
         try { Compile<Person>("Person.Age > 18")(null!); r.Expect("a null object is refused", false); }
         catch (ArgumentNullException) { r.Expect("a null object is refused", true); }
+
+        RunOrders(r, ada, tim);
 
         // mistakes are found when the rule is compiled, not when it first meets an object
         foreach (var rule in new[]

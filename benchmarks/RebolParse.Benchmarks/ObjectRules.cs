@@ -230,3 +230,53 @@ public class ObjectRuleScaleCompile : ObjectRuleScale
     [Benchmark] public Func<Person, bool> DynamicLinq() => Linq();
     [Benchmark] public Func<Person, bool> DynamicLinqCompileFast() => LinqFast();
 }
+
+/// <summary>
+/// Checking an order with a deeper shape or JSON metadata, per order, using rules from <see cref="Scenarios"/>
+/// that every engine can run. Each engine reads the rule in its own spelling; the JSON rules call
+/// <c>JsonElement</c> methods in the libraries and use JSON paths in the sample.
+/// </summary>
+[MemoryDiagnoser]
+public class ObjectRuleShapes
+{
+    [Params("DeepGuarded", "ListItems", "JsonNumber", "JsonString", "JsonMixed", "JsonHelper")] public string Shape = "DeepGuarded";
+
+    private static readonly Order[] Orders = [Scenarios.Full, Scenarios.Other];   // one passes, one fails, neither makes a library throw
+    private Func<Order, bool> handwritten = null!, sample = null!, sampleFast = null!, expresso = null!, linq = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        var scenario = Scenarios.Named(Shape switch
+        {
+            "DeepGuarded" => "Deep path, guarded against nulls",
+            "ListItems" => "List count, then two items",
+            "JsonNumber" => "JSON number",
+            "JsonString" => "JSON nested string",
+            "JsonMixed" => "JSON and properties together",
+            _ => "JSON through a registered helper",
+        });
+        handwritten = scenario.Expected;
+        sample = Scenarios.SampleBare(scenario.Sample!);
+        sampleFast = RuleTexts.Demo.ToExpression<Order>(scenario.Sample!).CompileFast(ifFastFailedReturnNull: true)
+                     ?? throw new InvalidOperationException("FastExpressionCompiler could not compile the rule");
+        expresso = Scenarios.Expresso(scenario.Expresso!);
+        linq = Scenarios.LinqRegistered(scenario.Linq!);
+        foreach (var order in Orders)
+            if (new[] { sample(order), sampleFast(order), expresso(order), linq(order) }.Any(answer => answer != handwritten(order)))
+                throw new InvalidOperationException($"the engines disagree on {Shape}");
+    }
+
+    private static int Count(Func<Order, bool> check)
+    {
+        var passed = 0;
+        foreach (var order in Orders) if (check(order)) passed++;
+        return passed;
+    }
+
+    [Benchmark(Baseline = true, OperationsPerInvoke = 2)] public int Handwritten() => Count(handwritten);
+    [Benchmark(OperationsPerInvoke = 2)] public int RebolParseRules() => Count(sample);
+    [Benchmark(OperationsPerInvoke = 2)] public int RebolParseRulesCompileFast() => Count(sampleFast);
+    [Benchmark(OperationsPerInvoke = 2)] public int DynamicExpresso() => Count(expresso);
+    [Benchmark(OperationsPerInvoke = 2)] public int DynamicLinq() => Count(linq);
+}

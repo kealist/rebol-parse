@@ -178,6 +178,48 @@ The two rules above are small and were checked against one person who passes. Th
 - **FastExpressionCompiler's code is 10 to 25% slower to run** than .NET's on these rules, for both parsers. It trades a little speed per check for a much faster compile, which pays when rules are compiled often or there are thousands of them, and loses when a few rules check millions of objects.
 - **The sample allocates far less while compiling**: 127 KB for the 64-comparison rule against 1.1 to 1.6 MB for the libraries.
 
+### Deeper objects and JSON metadata
+
+An `Order` with a customer, an employer and its parent company, a list of lines, a dictionary of tags, an earlier order, and a `JsonDocument` of loose metadata. Each rule is written the way each library wants it and run against four orders: **full** (every rule true), **other** (every rule false), **sparse** (nulls and empty lists everywhere, no metadata) and **odd** (metadata holding the wrong type under every name). "ok" means all four answers matched a null-safe C# lambda. Print this table, with every rule text, by running `-- scenarios`.
+
+| Rule | RebolParse rules sample | DynamicExpresso | Dynamic.Core, default | Dynamic.Core, types registered |
+|---|---|---|---|---|
+| Deep path `Order.Customer.Employer.Parent.Address.City` | ok | throws on sparse | throws on sparse | throws on sparse |
+| The same, guarded (`?.` or `np(...)`) | ok, no guard needed | ok | ok | ok |
+| Enum by name | ok | ok, as `Tier.Gold` | ok | ok |
+| List item `Order.Lines[0]...` | ok | throws on sparse | throws on sparse | throws on sparse |
+| List count, then two items | ok | ok | ok | ok |
+| Nullable number | ok | throws on sparse | throws on sparse | throws on sparse |
+| Dictionary key `Order.Tags["channel"]` | ok | throws on sparse | throws on sparse | throws on sparse |
+| Dates on two objects | ok | throws on sparse | throws on sparse | throws on sparse |
+| Any item matches (`Lines.Any(...)`) | cannot say it | ok | ok | ok |
+| Method call (`Name.StartsWith("A")`) | cannot say it | ok | ok | ok |
+| Arithmetic (`Qty * Price > 1000`) | cannot say it | throws on sparse | throws on sparse | throws on sparse |
+| JSON number, string, true/false, array item, key with a dash | ok | throws on sparse and odd | does not compile | throws on sparse and odd |
+| JSON and properties together | ok | throws on sparse and odd | does not compile | throws on sparse and odd |
+| JSON through a helper you write and register | ok, no helper needed | ok | does not compile | ok |
+
+- **The libraries follow C#, so a missing value throws.** A null in a path is a `NullReferenceException`, a list position past the end an `ArgumentOutOfRangeException`, a missing key a `KeyNotFoundException`. Each has a guard (`?.` in DynamicExpresso, `np(...)` in Dynamic.Core), but the rule author has to remember it. The sample treats all of these as null.
+- **Neither library has JSON paths.** A rule reaches into a `JsonDocument` by calling its methods: `Order.Metadata.RootElement.GetProperty("customer").GetProperty("score").GetDouble() > 80` against the sample's `Order.Metadata.customer.score > 80`. That throws when the metadata is null, when a name is missing, and when a value is the wrong type. The practical fix is a helper such as `MetaJson.Num(Order.Metadata, "customer.score")` that you write and register; with one, both libraries get every order right.
+- **Dynamic.Core refuses method calls on types it was not told about**, so out of the box no JSON rule compiles. Registering `JsonDocument` and `JsonElement` with a custom type provider fixes that. This is its protection against rule text calling arbitrary code, and DynamicExpresso does not have it.
+- **The sample cannot say three things the libraries can**: a condition over every item of a list, a method call, and arithmetic.
+
+**Checking one order**, for the rules every engine can run, averaged over the full and the other order.
+
+| | Guarded deep path | List count, two items | JSON number | JSON nested string | JSON and properties | JSON through a helper |
+|---|---:|---:|---:|---:|---:|---:|
+| Lambda written in C# | 0.9 ns | 1.3 ns | 83 ns, 32 B | 114 ns, 160 B | 110 ns, 112 B | 163 ns, 144 B |
+| DynamicExpresso | 1.8 ns | 1.6 ns | 54 ns | 74 ns, 40 B | 72 ns | 164 ns, 144 B |
+| System.Linq.Dynamic.Core | 1.8 ns | 1.6 ns | 54 ns | 74 ns, 40 B | 72 ns | 169 ns, 144 B |
+| RebolParse rules sample | 4.6 ns | 10.5 ns | 78 ns | 74 ns | 92 ns | 194 ns |
+| RebolParse rules sample + FastExpressionCompiler | 5.5 ns | 13.2 ns | 71 ns | 75 ns | 96 ns | 178 ns |
+
+The C# lambda uses the `MetaJson` helper for JSON, which splits its path on every call; that is why it is slower than the libraries' direct method calls. In the last column the libraries call that helper and the sample uses its own paths.
+
+- **Reading JSON costs 50 to 100 ns whoever does it**, 20 to 50 times a property read, because `JsonDocument` finds a property by scanning the object. If a rule runs millions of times against metadata, copy the fields it needs into real properties first.
+- **The sample is about 1.3 times slower on JSON numbers** (it reads a `decimal`, the libraries an `int` or `double`), **level on strings, and allocates nothing**, since it compares the JSON text in place where `GetString()` makes a string.
+- **Null safety is not free on plain objects.** The sample is 2.5 times slower than the libraries on the guarded deep path and 6.5 times slower on list items, where it goes through `IReadOnlyList<T>` and a `Nullable<int>` and the libraries index the `List<T>` directly. In absolute terms that is 3 to 9 ns a check.
+
 ## Run it
 
 ```bash
@@ -185,6 +227,7 @@ dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*StripDigits*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*JsonLookup*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRule*" --job short
+dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- scenarios     # the deep-object and JSON table, with every rule text
 ```
 
 Drop `--job short` for a precise run; the full job takes several times longer. The 11 MB JSON cases take a few minutes.
