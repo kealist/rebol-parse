@@ -239,7 +239,9 @@ public class ObjectRuleScaleCompile : ObjectRuleScale
 [MemoryDiagnoser]
 public class ObjectRuleShapes
 {
-    [Params("DeepGuarded", "ListItems", "JsonNumber", "JsonString", "JsonMixed", "JsonHelper")] public string Shape = "DeepGuarded";
+    [ParamsSource(nameof(Shapes))] public string Shape = "";
+
+    public virtual IEnumerable<string> Shapes => ["DeepGuarded", "ListItems", "JsonNumber", "JsonString", "JsonMixed", "JsonHelper"];
 
     private static readonly Order[] Orders = [Scenarios.Full, Scenarios.Other];   // one passes, one fails, neither makes a library throw
     private Func<Order, bool> handwritten = null!, sample = null!, sampleFast = null!, expresso = null!, linq = null!;
@@ -254,12 +256,25 @@ public class ObjectRuleShapes
             "JsonNumber" => "JSON number",
             "JsonString" => "JSON nested string",
             "JsonMixed" => "JSON and properties together",
-            _ => "JSON through a registered helper",
+            "JsonHelper" => "JSON through a registered helper",
+            "TwoStrings" => "Both sides: two strings, deep paths",
+            "IntAndDecimal" => "Both sides: an int and a decimal",
+            "EnumAndString" => "Both sides: an enum and a string",
+            "JsonAndString" => "Both sides: JSON and a string property",
+            "JsonAndNumber" => "Both sides: JSON and a number property",
+            "TwoJsonNumbers" => "Both sides: two JSON numbers",
+            "Arithmetic" => "Arithmetic on both sides",
+            "MinMax" => "min and max",
+            "ArithmeticJson" => "Arithmetic with JSON and min",
+            _ => throw new ArgumentException(Shape),
         });
         handwritten = scenario.Expected;
         sample = Scenarios.SampleBare(scenario.Sample!);
-        sampleFast = RuleTexts.Demo.ToExpression<Order>(scenario.Sample!).CompileFast(ifFastFailedReturnNull: true)
-                     ?? throw new InvalidOperationException("FastExpressionCompiler could not compile the rule");
+        // FastExpressionCompiler declines some trees (calculations on decimal? values among them). An application would
+        // then use .NET's compiler, so that is what is timed, and the run says so.
+        var fast = RuleTexts.Demo.ToExpression<Order>(scenario.Sample!).CompileFast(ifFastFailedReturnNull: true);
+        if (fast == null) Console.WriteLine($"// FastExpressionCompiler declined {Shape}; timing .NET's compiler in its place");
+        sampleFast = fast ?? sample;
         expresso = Scenarios.Expresso(scenario.Expresso!);
         linq = Scenarios.LinqRegistered(scenario.Linq!);
         foreach (var order in Orders)
@@ -279,4 +294,16 @@ public class ObjectRuleShapes
     [Benchmark(OperationsPerInvoke = 2)] public int RebolParseRulesCompileFast() => Count(sampleFast);
     [Benchmark(OperationsPerInvoke = 2)] public int DynamicExpresso() => Count(expresso);
     [Benchmark(OperationsPerInvoke = 2)] public int DynamicLinq() => Count(linq);
+}
+
+/// <summary>The same measurement for rules with a property, a list item or JSON on both sides of the operator.</summary>
+public class ObjectRuleBothSides : ObjectRuleShapes
+{
+    public override IEnumerable<string> Shapes => ["TwoStrings", "IntAndDecimal", "EnumAndString", "JsonAndString", "JsonAndNumber", "TwoJsonNumbers"];
+}
+
+/// <summary>The same measurement for rules that calculate: <c>+ - * /</c>, <c>min</c> and <c>max</c>.</summary>
+public class ObjectRuleArithmetic : ObjectRuleShapes
+{
+    public override IEnumerable<string> Shapes => ["Arithmetic", "MinMax", "ArithmeticJson"];
 }

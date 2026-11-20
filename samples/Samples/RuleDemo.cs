@@ -14,7 +14,10 @@ namespace Samples;
 /// result is a compiled <see cref="Func{T, TResult}"/> to call on as many objects as you like.
 /// </summary>
 /// <remarks>
-/// A rule can read public properties and fields, and nothing else: it cannot call methods. A property
+/// A rule can read public properties and fields, and nothing else: it cannot call methods. The only
+/// calculations are <c>+ - * /</c>, unary minus, and <c>min(...)</c> and <c>max(...)</c> of two or more numbers,
+/// on either side of a comparison: <c>Order.Lines[0].Qty * Order.Lines[0].Price &gt; max(100, Order.Metadata.limit)</c>.
+/// A property
 /// reached through a null (<c>Person.Address.City</c> with no address) is null instead of an exception,
 /// and a comparison with null is false, except that null equals null (so <c>== null</c> works, and two
 /// missing values are equal).
@@ -41,6 +44,10 @@ public sealed class RuleDemo : IDemo
             string.Concat(Parts.Select((part, i) => part switch { int at => $"[{at}]", Key key => $"[\"{key.Name}\"]", _ => i == 0 ? $"{part}" : $".{part}" }));
     }
     private sealed record Cmp(string Op, Node Left, Node Right) : Node;
+    private sealed record Arith(char Op, Node Left, Node Right) : Node;   // + - * /
+    private sealed record Minus(Node Inner) : Node;                       // -x
+    private sealed record Call(string Name, List<Node> Args) : Node;      // min(a, b), max(a, b, c)
+    private sealed record Open(string Text) : Node;                       // held on the stack while its operands are read: an operator or a function name
     private sealed record Logic(bool IsAnd, Node Left, Node Right) : Node;
     private sealed record Neg(Node Inner) : Node;
 
@@ -62,22 +69,40 @@ public sealed class RuleDemo : IDemo
             ["index"] = c => ((Prop)stack.Peek()).Parts.Add(
                 int.TryParse((string)c.Vars["i"]!, NumberStyles.None, CultureInfo.InvariantCulture, out var at) ? at : throw new FormatException($"the position {c.Vars["i"]} is too large")),
             ["key"] = _ => { var key = (Lit)stack.Pop(); ((Prop)stack.Peek()).Parts.Add(new Key((string)key.Value!)); },   // the text rule pushed it
-            ["compare"] = c => Binary((l, r) => new Cmp((string)c.Vars["op"]!, l, r)),
+            // an operator or function name goes on the stack as soon as it is read: a bracket inside the right-hand side may read another
+            ["op"] = c => stack.Push(new Open((string)c.Vars["op"]!)),
+            ["compare"] = _ => { var right = stack.Pop(); var op = (Open)stack.Pop(); stack.Push(new Cmp(op.Text, stack.Pop(), right)); },
+            ["add"] = _ => Binary((l, r) => new Arith('+', l, r)),
+            ["sub"] = _ => Binary((l, r) => new Arith('-', l, r)),
+            ["mul"] = _ => Binary((l, r) => new Arith('*', l, r)),
+            ["div"] = _ => Binary((l, r) => new Arith('/', l, r)),
+            ["minus"] = _ => stack.Push(new Minus(stack.Pop())),
+            ["open"] = c => stack.Push(new Open((string)c.Vars["f"]!)),
+            ["call"] = _ =>
+            {
+                var args = new List<Node>();
+                while (stack.Peek() is not Open) args.Insert(0, stack.Pop());
+                stack.Push(new Call(((Open)stack.Pop()).Text, args));
+            },
             ["and"] = _ => Binary((l, r) => new Logic(true, l, r)),
             ["or"] = _ => Binary((l, r) => new Logic(false, l, r)),
             ["not"] = _ => stack.Push(new Neg(stack.Pop())),
         };
-        // lowest precedence first: || then && then ! then a comparison
+        // lowest precedence first, as in C#: || then && then a comparison then + - then * / then ! and unary minus.
+        // Brackets hold any expression; whether it is a number or true/false is checked afterwards, against the types.
         grammar = Dialect.ReadGrammar("""
             _       = any space
             rule    = orExpr _ end
             orExpr  = andExpr any [_ "||" andExpr (@or)]
-            andExpr = unary   any [_ "&&" unary   (@and)]
-            unary   = _ ["!" unary (@not) | "(" orExpr _ ")" | compare]
-            compare = value opt [_ copy op ["==" | "!=" | ">=" | "<=" | ">" | "<"] value (@compare)]
-            value   = _ [number | text
-                       | "true" not idchar (@true) | "false" not idchar (@false) | "null" not idchar (@null)
-                       | path]
+            andExpr = compare any [_ "&&" compare (@and)]
+            compare = sum opt [_ copy op ["==" | "!=" | ">=" | "<=" | ">" | "<"] (@op) sum (@compare)]
+            sum     = product any [_ "+" product (@add) | _ "-" product (@sub)]
+            product = factor  any [_ "*" factor  (@mul) | _ "/" factor  (@div)]
+            factor  = _ ["!" factor (@not) | "(" orExpr _ ")" | call | value | "-" factor (@minus)]
+            call    = copy f ["min" | "max"] _ "(" (@open) sum some [_ "," sum] _ ")" (@call)
+            value   = number | text
+                    | "true" not idchar (@true) | "false" not idchar (@false) | "null" not idchar (@null)
+                    | path
             number  = copy n [opt "-" some digit opt ["." some digit]] not idchar (@number)
             text    = "^"" copy s any [not ["^"" | "\"] skip | "\" skip] "^"" (@text)
                     | "'"  copy s any [not ["'"  | "\"] skip | "\" skip] "'"  (@text)
@@ -168,8 +193,13 @@ public sealed class RuleDemo : IDemo
             if (e.Type == typeof(bool)) return e;
             if (e.Type == typeof(bool?)) return Expression.Equal(e, Expression.Constant(true, typeof(bool?)));
             if (IsJson(e.Type)) return Expression.Equal(Expression.Call(Json.Bool, e), Expression.Constant(true, typeof(bool?)));   // only JSON true
-            var what = node is Prop p ? p.ToString() : Convert.ToString(((Lit)node).Value, CultureInfo.InvariantCulture) ?? "null";
-            throw new FormatException($"'{what}' is not true or false on its own; compare it with something");
+            var what = node switch
+            {
+                Prop p => $"'{p}'",
+                Lit l => $"'{Convert.ToString(l.Value, CultureInfo.InvariantCulture) ?? "null"}'",
+                _ => "a calculation",
+            };
+            throw new FormatException($"{what} is not true or false on its own; compare it with something");
         }
 
         private Expression Value(Node node) => node switch
@@ -177,6 +207,9 @@ public sealed class RuleDemo : IDemo
             Lit l => Expression.Constant(l.Value, l.Value?.GetType() ?? typeof(object)),
             Prop p => Path(p),
             Cmp c => Compare(c.Op, Value(c.Left), Value(c.Right)),
+            Arith a => Arithmetic(a.Op, Value(a.Left), Value(a.Right)),
+            Minus m => Expression.Negate(Number(Value(m.Inner), null, "-")),
+            Call c => c.Args.Select(Value).Aggregate((least, next) => MinMax(c.Name, least, next)),
             Logic { IsAnd: true } a => Expression.AndAlso(Condition(a.Left), Condition(a.Right)),
             Logic o => Expression.OrElse(Condition(o.Left), Condition(o.Right)),
             Neg n => Expression.Not(Condition(n.Inner)),
@@ -277,16 +310,61 @@ public sealed class RuleDemo : IDemo
         private static Type? Implements(Type type, Type generic) =>
             type.GetInterfaces().Append(type).FirstOrDefault(t => t.IsGenericType && t.GetGenericTypeDefinition() == generic);
 
+        /// <summary>An operand of a calculation: a number, or JSON read as one. Anything else is a mistake in the rule.</summary>
+        private static Expression Number(Expression e, Expression? other, string what)
+        {
+            if (IsJson(e.Type))   // exact against a decimal property, otherwise a double, as in a comparison
+                return Expression.Call(other != null && Bare(other.Type) == typeof(decimal) && other is not ConstantExpression ? Json.Decimal : Json.Double, e);
+            return IsNumber(e.Type) ? e
+                : throw new FormatException($"'{what}' needs numbers, not {(IsNullLiteral(e) ? "null" : Show(e.Type))}");
+        }
+
+        /// <summary>
+        /// <c>+ - * /</c> on two numbers, as the wider of their types. A missing value makes the result missing.
+        /// Whole numbers divide exactly (7 / 2 is 3.5), and dividing by zero is a missing value, not an exception.
+        /// </summary>
+        private Expression Arithmetic(char op, Expression left, Expression right)
+        {
+            (left, right) = (Number(left, right, $"{op}"), Number(right, left, $"{op}"));
+            var type = Widest(left.Type, right.Type);
+            if (op != '/')
+                return Expression.MakeBinary(op == '+' ? ExpressionType.Add : op == '-' ? ExpressionType.Subtract : ExpressionType.Multiply, To(left, type), To(right, type));
+            if (Bare(type) == typeof(double)) return Expression.Divide(To(left, type), To(right, type));   // a double divides to infinity
+
+            var divisor = Local(typeof(decimal?));
+            return Expression.Condition(
+                Expression.Equal(Expression.Assign(divisor, To(right, typeof(decimal?))), Expression.Constant(0m, typeof(decimal?))),
+                Expression.Default(typeof(decimal?)),
+                Expression.Divide(To(left, typeof(decimal?)), divisor));
+        }
+
+        /// <summary><c>min(a, b)</c> or <c>max(a, b)</c>, as the wider of the two types. Missing if either is missing.</summary>
+        private static Expression MinMax(string name, Expression left, Expression right)
+        {
+            (left, right) = (Number(left, right, name), Number(right, left, name));
+            var type = Widest(left.Type, right.Type);
+            var method = CanBeNull(type)
+                ? typeof(Calc).GetMethod(name == "min" ? nameof(Calc.Min) : nameof(Calc.Max), [type, type])!
+                : typeof(Math).GetMethod(name == "min" ? nameof(Math.Min) : nameof(Math.Max), [type, type])!;
+            return Expression.Call(method, To(left, type), To(right, type));
+        }
+
         private static Expression Compare(string op, Expression left, Expression right)
         {
             if (IsJson(left.Type) || IsJson(right.Type))
             {
-                // JSON has no type until it is read, so read it as whatever it is being compared with
-                if (left.Type == right.Type)
-                    throw new FormatException("two JSON values cannot be compared with each other; compare each with a number, a string, true, false or null");
+                var equality = op is "==" or "!=";
+                if (left.Type == right.Type)   // JSON on both sides: equal if the two values are the same JSON; ordered only as numbers
+                {
+                    if (!equality) return Expression.MakeBinary(Operators[op], Expression.Call(Json.Double, left), Expression.Call(Json.Double, right));
+                    var same = Expression.Call(Json.Same, left, right);
+                    return op == "==" ? same : Expression.Not(same);
+                }
+
+                // JSON on one side has no type until it is read, so read it as whatever it is being compared with
                 var jsonFirst = IsJson(left.Type);
                 var (json, other) = jsonFirst ? (left, right) : (right, left);
-                var equality = op is "==" or "!=";
+                if (Bare(other.Type).IsEnum) other = NameOf(other);   // an enum property against JSON text
                 if (IsNullLiteral(other) && equality)
                     return op == "==" ? Expression.Not(Expression.Property(json, "HasValue")) : Expression.Property(json, "HasValue");
                 if (other is ConstantExpression { Value: string text } && equality)   // compares the JSON text in place: no string is made
@@ -316,6 +394,8 @@ public sealed class RuleDemo : IDemo
             {
                 // Person.Level == "Lead": the name was turned into the enum value
             }
+            else if (Bare(left.Type).IsEnum && right.Type == typeof(string)) left = NameOf(left);     // an enum property against a string property
+            else if (Bare(right.Type).IsEnum && left.Type == typeof(string)) right = NameOf(right);
             else if (IsNumber(left.Type) && IsNumber(right.Type))
             {
                 var type = Widest(left.Type, right.Type);
@@ -345,6 +425,12 @@ public sealed class RuleDemo : IDemo
             return true;
         }
 
+        /// <summary>An enum value as its name, to compare with text that is not known until the rule runs. Null stays null.</summary>
+        private static Expression NameOf(Expression value) =>
+            Expression.Call(typeof(Builder).GetMethod(nameof(EnumText))!, Expression.Convert(value, typeof(object)));
+
+        public static string? EnumText(object? value) => value?.ToString();
+
         /// <summary>The type two numbers are compared as: double if either is floating point, else decimal if either needs it, else long.</summary>
         private static Type Widest(Type a, Type b)
         {
@@ -373,7 +459,7 @@ public sealed class RuleDemo : IDemo
     private static class Json
     {
         public static readonly MethodInfo Root = Of(nameof(RootOf)), Clean = Of(nameof(CleanOf)), Get = Of(nameof(GetOf)), At = Of(nameof(AtOf)),
-            TextIs = Of(nameof(TextIsOf)), Text = Of(nameof(TextOf)), Bool = Of(nameof(BoolOf)), Decimal = Of(nameof(DecimalOf)), Double = Of(nameof(DoubleOf));
+            TextIs = Of(nameof(TextIsOf)), Same = Of(nameof(SameOf)), Text = Of(nameof(TextOf)), Bool = Of(nameof(BoolOf)), Decimal = Of(nameof(DecimalOf)), Double = Of(nameof(DoubleOf));
 
         private static MethodInfo Of(string name) => typeof(Json).GetMethod(name)!;
 
@@ -386,10 +472,24 @@ public sealed class RuleDemo : IDemo
         public static JsonElement? AtOf(JsonElement? e, int at) =>
             e is { ValueKind: JsonValueKind.Array } a && at < a.GetArrayLength() ? CleanOf(a[at]) : null;
         public static bool TextIsOf(JsonElement? e, byte[] text) => e is { ValueKind: JsonValueKind.String } s && s.ValueEquals(text);
+        /// <summary>Two JSON values are equal when both are missing, or both are there and hold the same JSON.</summary>
+        public static bool SameOf(JsonElement? a, JsonElement? b) =>
+            a is { } x && b is { } y ? JsonElement.DeepEquals(x, y) : a is null && b is null;
         public static string? TextOf(JsonElement? e) => e is { ValueKind: JsonValueKind.String } s ? s.GetString() : null;
         public static bool? BoolOf(JsonElement? e) => e?.ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null };
         public static decimal? DecimalOf(JsonElement? e) => e is { ValueKind: JsonValueKind.Number } n && n.TryGetDecimal(out var value) ? value : null;
         public static double? DoubleOf(JsonElement? e) => e is { ValueKind: JsonValueKind.Number } n ? n.GetDouble() : null;
+    }
+
+    /// <summary>min and max for values that may be missing: the answer is missing if either one is.</summary>
+    private static class Calc
+    {
+        public static long? Min(long? a, long? b) => a is { } x && b is { } y ? Math.Min(x, y) : null;
+        public static long? Max(long? a, long? b) => a is { } x && b is { } y ? Math.Max(x, y) : null;
+        public static decimal? Min(decimal? a, decimal? b) => a is { } x && b is { } y ? Math.Min(x, y) : null;
+        public static decimal? Max(decimal? a, decimal? b) => a is { } x && b is { } y ? Math.Max(x, y) : null;
+        public static double? Min(double? a, double? b) => a is { } x && b is { } y ? Math.Min(x, y) : null;
+        public static double? Max(double? a, double? b) => a is { } x && b is { } y ? Math.Max(x, y) : null;
     }
 
     /// <summary>Reading lists and dictionaries from a compiled rule without throwing for a missing item.</summary>
@@ -421,7 +521,7 @@ public sealed class RuleDemo : IDemo
         var first = new Order(1, tim, [], [], [], Metadata: null);
         var full = new Order(2, ada, [new("pen", 12, 1.50m), new("desk", 1, 240m)], new() { ["channel"] = "web" }, [7, 9],
             JsonDocument.Parse("""
-                {"priority": 5, "source": "web", "gift": true, "ratio": 0.25, "note": null,
+                {"level": "Lead", "backup": "web", "priority": 5, "source": "web", "gift": true, "ratio": 0.25, "note": null,
                  "customer": {"segment": "enterprise", "score": 87.5},
                  "tags": ["rush", "fragile"], "ship-to": {"city": "London"}}
                 """), Previous: first);
@@ -446,6 +546,22 @@ public sealed class RuleDemo : IDemo
             ("Order.Metadata.note == null && Order.Metadata.nothing.at.all == null", true, true, true),    // JSON null and missing
             ("Order.Metadata != null && Order.Metadata.priority != 5", false, true, false),                // the wrong type is not 5
             ("Order.Metadata.priority > 3 && Order.Buyer.Level == 'Lead' && Order.Lines.Count > 1", true, false, false),
+            // calculations on either side
+            ("Order.Lines[0].Qty * Order.Lines[0].Price > Order.Lines[1].Price / 20", true, true, false),   // 18.00 > 12.00
+            ("Order.Lines[0].Qty + Order.Lines[1].Qty == 13 && Order.Id - 1 == Order.Previous.Id", true, true, false),
+            ("min(Order.Lines[0].Qty, Order.Lines[1].Qty) == 1 && max(Order.Lines[0].Price, Order.Lines[1].Price, 9) == 240", true, true, false),
+            ("max(Order.Metadata.priority, 3) * 2 > Order.Lines.Count + 7", true, false, false),            // JSON in a calculation
+            ("Order.Lines.Count / 0 == null && 7 / 2 == 3.5 && -Order.Id + 2 == 0", true, true, false),      // nothing divides by zero
+            ("(Order.Buyer.Age - Order.Previous.Buyer.Age) * 2 >= 38 && !(Order.Id * 2 < 4)", true, true, false),
+            ("Order.Codes[0] * (Order.Codes[1] - 2) == 49 || min(Order.Codes[5], 1) == 1", true, true, false),
+            // a property, a list item or JSON on both sides
+            ("Order.Lines[0].Qty > Order.Lines[1].Price || Order.Id == Order.Previous.Id", false, false, false),   // an int against a decimal
+            ("Order.Buyer.Age > Order.Previous.Buyer.Age && Order.Buyer.Level != Order.Previous.Buyer.Level", true, true, false),
+            ("Order.Buyer.Address == Order.Previous.Buyer.Address", false, false, true),                   // whole objects; null == null
+            ("Order.Metadata.priority > Order.Lines.Count && Order.Codes[0] > Order.Metadata.priority", true, false, false),
+            ("Order.Metadata.source == Order.Metadata.backup && Order.Metadata.priority < Order.Metadata.customer.score", true, false, false),
+            ("Order.Metadata.source != Order.Metadata.tags[0]", true, true, false),                          // JSON against JSON
+            ("Order.Buyer.Level == Order.Metadata.level && Order.Buyer.Level != Order.Tags['channel']", true, false, false),   // an enum against text
         ];
         foreach (var (rule, forFull, forOdd, forFirst) in cases)
         {
@@ -456,8 +572,10 @@ public sealed class RuleDemo : IDemo
         foreach (var rule in new[]
                  {
                      "Order.Id[0] == 1", "Order.Lines['a'] == null", "Order.Tags[0] == 'web'", "Order.Lines[0]", "Order.Lines[99999999999].Qty > 1",
-                     "Order.Metadata.a == Order.Metadata.b", "Order.Metadata.level == Order.Buyer.Level", "Order.Metadata.priority > 'x'",
+                     "Order.Metadata.priority > 'x'", "Order.Buyer.Level > Order.Metadata.level", "Order.Buyer.Age == Order.Buyer.Name",
                      "Order.Metadata.priority > null", "Order.Lines[0.5].Qty > 1", "Order.Lines[0.Qty > 1",
+                     "Order.Buyer.Name + 1 > 2", "Order.Id + null > 2", "Order.Id + 1", "min(Order.Id) > 1", "min(Order.Id, 'a') > 1",
+                     "max(Order.Id, 2", "Order.Id * > 2", "(Order.Id > 1) + 2 > 3", "-Order.Buyer.Remote",
                  })
         {
             try { Compile<Order>(rule); r.Expect($"'{rule}' is rejected", false); }

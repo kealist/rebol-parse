@@ -86,7 +86,24 @@ public static class Scenarios
         new("Method call", o => o.Customer.Name.StartsWith('A'),
             null, "Order.Customer.Name.StartsWith(\"A\")", "Order.Customer.Name.StartsWith(\"A\")"),
         new("Arithmetic", o => o.Lines.Count > 0 && o.Lines[0].Qty * o.Lines[0].Product.Price.Amount > 1000,
-            null, "Order.Lines[0].Qty * Order.Lines[0].Product.Price.Amount > 1000", "Order.Lines[0].Qty * Order.Lines[0].Product.Price.Amount > 1000"),
+            "Order.Lines[0].Qty * Order.Lines[0].Product.Price.Amount > 1000"),
+        new("Arithmetic on both sides",
+            o => o.Lines.Count >= 2 && o.Lines[0].Qty * o.Lines[0].Product.Price.Amount > (o.Lines[1].Product.Price.Amount + 10) * o.Lines[1].Qty / 2,
+            "Order.Lines.Count >= 2 && Order.Lines[0].Qty * Order.Lines[0].Product.Price.Amount > (Order.Lines[1].Product.Price.Amount + 10) * Order.Lines[1].Qty / 2"),
+        new("Whole-number division", o => o.Lines.Count > 0 && o.Lines[0].Qty / 8.0 > 1.2,
+            "Order.Lines[0].Qty / 8 > 1.2", "Order.Lines.Count > 0 && Order.Lines[0].Qty / 8 > 1.2", "Order.Lines.Count > 0 && Order.Lines[0].Qty / 8 > 1.2"),
+        new("Division by zero", o => false,
+            "Order.Id / (Order.Lines.Count - Order.Lines.Count) > 0"),
+        new("min and max",
+            o => o.Lines.Count >= 2 && Math.Max(o.Lines[0].Qty, o.Lines[1].Qty) > 10 && Math.Min(o.Id, 50) == o.Id,
+            "max(Order.Lines[0].Qty, Order.Lines[1].Qty) > 10 && min(Order.Id, 50) == Order.Id",
+            "Order.Lines.Count >= 2 && Math.Max(Order.Lines[0].Qty, Order.Lines[1].Qty) > 10 && Math.Min(Order.Id, 50) == Order.Id",
+            "Order.Lines.Count >= 2 && Math.Max(Order.Lines[0].Qty, Order.Lines[1].Qty) > 10 && Math.Min(Order.Id, 50) == Order.Id"),
+        new("Arithmetic with JSON and min",
+            o => o.Lines.Count > 0 && (double)(o.Lines[0].Qty * o.Lines[0].Product.Price.Amount) > MetaJson.Num(o.Metadata, "priority") * 100 + Math.Min(o.Id, 50),
+            "Order.Lines[0].Qty * Order.Lines[0].Product.Price.Amount > Order.Metadata.priority * 100 + min(Order.Id, 50)",
+            "Order.Lines.Count > 0 && Convert.ToDouble(Order.Lines[0].Qty * Order.Lines[0].Product.Price.Amount) > MetaJson.Num(Order.Metadata, \"priority\") * 100 + Math.Min(Order.Id, 50)",
+            "Order.Lines.Count > 0 && Convert.ToDouble(Order.Lines[0].Qty * Order.Lines[0].Product.Price.Amount) > MetaJson.Num(Order.Metadata, \"priority\") * 100 + Math.Min(Order.Id, 50)"),
 
         new("JSON number", o => MetaJson.Num(o.Metadata, "priority") >= 3,
             "Order.Metadata.priority >= 3",
@@ -114,6 +131,58 @@ public static class Scenarios
             "Order.Metadata.customer.score > 80 && Order.Metadata.source == \"web\"",
             "MetaJson.Num(Order.Metadata, \"customer.score\") > 80 && MetaJson.Str(Order.Metadata, \"source\") == \"web\"",
             "MetaJson.Num(Order.Metadata, \"customer.score\") > 80 && MetaJson.Str(Order.Metadata, \"source\") == \"web\""),
+
+        // ---- a property, a list item or JSON on both sides of the operator ----
+        new("Both sides: two strings, deep paths",
+            o => o.Customer.Address?.City == o.Customer.Employer?.Parent?.Address?.City,
+            "Order.Customer.Address.City == Order.Customer.Employer.Parent.Address.City",
+            "Order.Customer.Address?.City == Order.Customer.Employer?.Parent?.Address?.City",
+            "np(Order.Customer.Address.City) == np(Order.Customer.Employer.Parent.Address.City)"),
+        new("Both sides: an int and a decimal",
+            o => o.Lines.Count > 0 && o.Lines[0].Qty < o.Lines[0].Product.Price.Amount,
+            "Order.Lines.Count > 0 && Order.Lines[0].Qty < Order.Lines[0].Product.Price.Amount"),
+        new("Both sides: a double? and an int",
+            o => o.Lines.Count > 0 && o.Lines[0].Product.WeightKg < o.Lines[0].Qty,
+            "Order.Lines.Count > 0 && Order.Lines[0].Product.WeightKg < Order.Lines[0].Qty"),
+        new("Both sides: ints on two objects",
+            o => o.Id != o.Previous?.Id,
+            "Order.Id != Order.Previous.Id", "Order.Id != Order.Previous?.Id", "Order.Id != np(Order.Previous.Id)"),
+        new("Both sides: two enums",
+            o => o.Customer.Tier == o.Previous?.Customer.Tier,
+            "Order.Customer.Tier == Order.Previous.Customer.Tier",
+            "Order.Customer.Tier == Order.Previous?.Customer.Tier", "Order.Customer.Tier == np(Order.Previous.Customer.Tier)"),
+        new("Both sides: two whole objects",
+            o => o.Customer.Address == o.Customer.Employer?.Address,
+            "Order.Customer.Address == Order.Customer.Employer.Address",
+            "Order.Customer.Address == Order.Customer.Employer?.Address", "Order.Customer.Address == np(Order.Customer.Employer.Address)"),
+        new("Both sides: an enum and a string",
+            o => o.Customer.Tier.ToString() == o.Tags.GetValueOrDefault("tier"),
+            "Order.Customer.Tier == Order.Tags[\"tier\"]",
+            "Order.Tags.ContainsKey(\"tier\") && Order.Customer.Tier.ToString() == Order.Tags[\"tier\"]",
+            "Order.Tags.ContainsKey(\"tier\") && Order.Customer.Tier.ToString() == Order.Tags[\"tier\"]"),
+        new("Both sides: JSON and a string property",
+            o => MetaJson.Str(o.Metadata, "ship-to.city") == o.Customer.Employer?.Parent?.Address?.City,
+            "Order.Metadata[\"ship-to\"].city == Order.Customer.Employer.Parent.Address.City",
+            "MetaJson.Str(Order.Metadata, \"ship-to.city\") == Order.Customer.Employer?.Parent?.Address?.City",
+            "MetaJson.Str(Order.Metadata, \"ship-to.city\") == np(Order.Customer.Employer.Parent.Address.City)"),
+        new("Both sides: JSON and a number property",
+            o => MetaJson.Num(o.Metadata, "priority") > o.Lines.Count,
+            "Order.Metadata.priority > Order.Lines.Count",
+            "MetaJson.Num(Order.Metadata, \"priority\") > Order.Lines.Count", "MetaJson.Num(Order.Metadata, \"priority\") > Order.Lines.Count"),
+        new("Both sides: JSON and an enum",
+            o => MetaJson.Str(o.Metadata, "tier") == o.Customer.Tier.ToString(),
+            "Order.Metadata.tier == Order.Customer.Tier",
+            "MetaJson.Str(Order.Metadata, \"tier\") == Order.Customer.Tier.ToString()", "MetaJson.Str(Order.Metadata, \"tier\") == Order.Customer.Tier.ToString()"),
+        new("Both sides: two JSON numbers",
+            o => MetaJson.Num(o.Metadata, "priority") < MetaJson.Num(o.Metadata, "customer.score"),
+            "Order.Metadata.priority < Order.Metadata.customer.score",
+            "MetaJson.Num(Order.Metadata, \"priority\") < MetaJson.Num(Order.Metadata, \"customer.score\")",
+            "MetaJson.Num(Order.Metadata, \"priority\") < MetaJson.Num(Order.Metadata, \"customer.score\")"),
+        new("Both sides: two JSON strings",
+            o => MetaJson.Str(o.Metadata, "source") == MetaJson.Str(o.Metadata, "backup"),
+            "Order.Metadata.source == Order.Metadata.backup",
+            "MetaJson.Str(Order.Metadata, \"source\") == MetaJson.Str(Order.Metadata, \"backup\")",
+            "MetaJson.Str(Order.Metadata, \"source\") == MetaJson.Str(Order.Metadata, \"backup\")"),
     ];
 
     public static Scenario Named(string name) => All.Single(s => s.Name == name);
@@ -126,9 +195,9 @@ public static class Scenarios
     public static readonly Order Full = new(2,
         new Customer("Ada", Tier.Gold, new Address("London", 1815), new Company("Initech", new Address("Bergen", 5003), new Company("Globex", new Address("Oslo", 150), null))),
         [new(new Product("desk", "furniture", new Money(150m, "EUR"), 2.0), 12), new(new Product("pen", "office", new Money(2m, "EUR"), null), 1)],
-        new() { ["channel"] = "web" }, new DateTime(2026, 3, 1),
+        new() { ["channel"] = "web", ["tier"] = "Gold" }, new DateTime(2026, 3, 1),
         Doc("""
-            {"priority": 5, "source": "web", "gift": true, "note": null,
+            {"tier": "Gold", "backup": "web", "priority": 5, "source": "web", "gift": true, "note": null,
              "customer": {"segment": "enterprise", "score": 87.5},
              "tags": ["rush", "fragile"], "ship-to": {"city": "Oslo"}}
             """),
@@ -138,9 +207,9 @@ public static class Scenarios
     public static readonly Order Other = new(3,
         new Customer("Bob", Tier.Silver, new Address("Leeds", 2000), new Company("Hooli", new Address("Leeds", 2000), new Company("Umbrella", new Address("Leeds", 2000), null))),
         [new(new Product("cup", "kitchen", new Money(5m, "EUR"), 0.3), 2), new(new Product("mat", "kitchen", new Money(9m, "EUR"), 0.1), 3)],
-        new() { ["channel"] = "phone" }, new DateTime(2026, 3, 1),
+        new() { ["channel"] = "phone", ["tier"] = "Gold" }, new DateTime(2026, 3, 1),
         Doc("""
-            {"priority": 1, "source": "phone", "gift": false,
+            {"tier": "Gold", "backup": "web", "priority": 1, "source": "phone", "gift": false,
              "customer": {"segment": "smb", "score": 20},
              "tags": ["slow"], "ship-to": {"city": "Leeds"}}
             """),
@@ -177,7 +246,8 @@ public static class Scenarios
 
     private static ParsingConfig MakeRegistered()
     {
-        var config = new ParsingConfig();
+        // ToString() is refused on every type unless this is set; a rule needs it to compare an enum with text that is not a literal
+        var config = new ParsingConfig { AllowEqualsAndToStringMethodsOnObject = true };
         config.CustomTypeProvider = new DefaultDynamicLinqCustomTypeProvider(config,
             [typeof(JsonDocument), typeof(JsonElement), typeof(MetaJson), typeof(Tier)]);
         return config;

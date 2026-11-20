@@ -146,7 +146,7 @@ The [`rules` sample](../samples/Samples/RuleDemo.cs) turns text like `Person.Age
 - **Call the typed delegate.** `Lambda.Invoke` boxes its arguments and calls dynamically, which is about 100 times slower on the nested rule. RulesEngine builds a result tree for every check, which costs about the same.
 - **Compiling is 10,000 times dearer than checking, so cache the delegate.** Most of the compile time is .NET turning the expression tree into IL, which is why three different parsers land close together. The sample reads and type-checks a rule in 2 to 3 µs; the other 64 to 217 µs is `Expression.Compile`.
 - **FastExpressionCompiler removes most of that.** `RuleDemo.ToExpression` returns the tree, and `CompileFast()` on it takes 6 to 13 µs in all, 10 to 17 times faster than the sample's own `Compile` and 2 to 5 times faster than Dynamic.Core with the same compiler. The benchmark fails if FastExpressionCompiler falls back to .NET's compiler, and it did not.
-- **Use a library unless you need the narrow surface.** The sample is competitive but does less: no method calls, no arithmetic. That is the point of it when rule authors are not trusted, and a limit otherwise.
+- **Use a library unless you need the narrow surface.** The sample is competitive but does less: no method calls, and only `+ - * /`, `min` and `max` for calculation. That is the point of it when rule authors are not trusted, and a limit otherwise.
 
 ### Larger rules and varied objects
 
@@ -194,7 +194,7 @@ An `Order` with a customer, an employer and its parent company, a list of lines,
 | Dates on two objects | ok | throws on sparse | throws on sparse | throws on sparse |
 | Any item matches (`Lines.Any(...)`) | cannot say it | ok | ok | ok |
 | Method call (`Name.StartsWith("A")`) | cannot say it | ok | ok | ok |
-| Arithmetic (`Qty * Price > 1000`) | cannot say it | throws on sparse | throws on sparse | throws on sparse |
+| Arithmetic (`Order.Lines[0].Qty * ...Price.Amount > 1000`) | ok | throws on sparse | throws on sparse | throws on sparse |
 | JSON number, string, true/false, array item, key with a dash | ok | throws on sparse and odd | does not compile | throws on sparse and odd |
 | JSON and properties together | ok | throws on sparse and odd | does not compile | throws on sparse and odd |
 | JSON through a helper you write and register | ok, no helper needed | ok | does not compile | ok |
@@ -202,7 +202,7 @@ An `Order` with a customer, an employer and its parent company, a list of lines,
 - **The libraries follow C#, so a missing value throws.** A null in a path is a `NullReferenceException`, a list position past the end an `ArgumentOutOfRangeException`, a missing key a `KeyNotFoundException`. Each has a guard (`?.` in DynamicExpresso, `np(...)` in Dynamic.Core), but the rule author has to remember it. The sample treats all of these as null.
 - **Neither library has JSON paths.** A rule reaches into a `JsonDocument` by calling its methods: `Order.Metadata.RootElement.GetProperty("customer").GetProperty("score").GetDouble() > 80` against the sample's `Order.Metadata.customer.score > 80`. That throws when the metadata is null, when a name is missing, and when a value is the wrong type. The practical fix is a helper such as `MetaJson.Num(Order.Metadata, "customer.score")` that you write and register; with one, both libraries get every order right.
 - **Dynamic.Core refuses method calls on types it was not told about**, so out of the box no JSON rule compiles. Registering `JsonDocument` and `JsonElement` with a custom type provider fixes that. This is its protection against rule text calling arbitrary code, and DynamicExpresso does not have it.
-- **The sample cannot say three things the libraries can**: a condition over every item of a list, a method call, and arithmetic.
+- **The sample cannot say two things the libraries can**: a condition over every item of a list, and a method call. Its arithmetic stops at `+ - * /`, `min` and `max`.
 
 **Checking one order**, for the rules every engine can run, averaged over the full and the other order. Each column is one rule. The sample reads the first text; where the libraries need a different spelling, it follows.
 
@@ -230,6 +230,51 @@ The C# lambda uses the `MetaJson` helper for JSON, which splits its path on ever
 - **Reading JSON costs 50 to 100 ns whoever does it**, 20 to 50 times a property read, because `JsonDocument` finds a property by scanning the object. If a rule runs millions of times against metadata, copy the fields it needs into real properties first.
 - **On JSON the sample is level or ahead, and allocates nothing.** It is 1.3 times faster on strings (56 against 74 ns), because it compares the JSON text in place where `GetString()` makes a string, level on the mixed rule, and 1.6 times faster than the libraries calling a helper. It is 1.2 times slower on a lone number (66 against 54 ns), where it reads a `double` and the libraries' rule asks for an `int`. It looks names up by their UTF-8 bytes, encoded once when the rule is compiled.
 - **On plain objects null safety now costs little.** The guarded deep path ties the libraries. List items are 2.9 ns against 1.5: the sample checks the list is there and long enough, and compares `int?` values, where the libraries index it and would throw.
+
+### Both sides of an operator, and calculations
+
+A rule can have a property, a list item, JSON or a calculation on either side: `Order.Lines[0].Qty * Order.Lines[0].Product.Price.Amount > max(100, Order.Metadata.limit)`. The sample has `+ - * /`, unary minus, and `min(...)` and `max(...)` of two or more numbers. Same four orders and the same meaning of "ok" as above; where a library needs a guard, a cast or the helper to get there, the cell says so.
+
+| Rule | RebolParse rules sample | DynamicExpresso | Dynamic.Core, default | Dynamic.Core, types registered |
+|---|---|---|---|---|
+| Two strings at the end of deep paths | ok | ok with `?.` | ok with `np(...)` | ok with `np(...)` |
+| An `int` and a `decimal`; a `double?` and an `int` | ok | ok | ok | ok |
+| Ints on two objects: `Order.Id != Order.Previous.Id` | ok | ok with `?.` | ok with `np(...)` | ok with `np(...)` |
+| Two enums: `Order.Customer.Tier == Order.Previous.Customer.Tier` | ok | **throws on sparse** even as `Order.Previous?.Customer.Tier` | ok with `np(...)` | ok with `np(...)` |
+| Two whole objects: `Order.Customer.Address == Order.Customer.Employer.Address` | ok | ok with `?.` | ok with `np(...)` | ok with `np(...)` |
+| An enum and a string property: `Order.Customer.Tier == Order.Tags["tier"]` | ok | ok as `Tier.ToString() == ...` | does not compile | ok as `Tier.ToString()`, once `ToString` is allowed |
+| JSON and a string or number property | ok | ok through the helper | does not compile | ok through the helper |
+| JSON and an enum: `Order.Metadata.tier == Order.Customer.Tier` | ok | ok, helper and `ToString()` | does not compile | ok, helper and `ToString()` |
+| Two JSON numbers: `Order.Metadata.priority < Order.Metadata.customer.score` | ok | ok through the helper | does not compile | ok through the helper |
+| Two JSON strings: `Order.Metadata.source == Order.Metadata.backup` | ok, with a different meaning (below) | ok through the helper | does not compile | ok through the helper |
+| Arithmetic on both sides: `Qty * Amount > (Amount + 10) * Qty / 2` | ok | ok | ok | ok |
+| Whole-number division: `Order.Lines[0].Qty / 8 > 1.2` with a quantity of 12 | true: 12 / 8 is 1.5 | false: 12 / 8 is 1 | false | false |
+| Division by zero | false | throws `DivideByZeroException` | throws | throws |
+| `max(a, b) > 10 && min(Order.Id, 50) == Order.Id` | ok | ok as `Math.Max`, `Math.Min` | ok as `Math.Max`, `Math.Min` | ok |
+| A `decimal` product against JSON arithmetic | ok | ok with `Convert.ToDouble(...)` | does not compile | ok with `Convert.ToDouble(...)` |
+
+- **Mixed types need no casts in the sample.** It compares and calculates as the wider type: `long`, then `decimal`, then `double`. The libraries follow C#, which has no `decimal > double`, so a decimal price against a JSON number needs `Convert.ToDouble(...)` written into the rule.
+- **Division differs on purpose.** In the sample whole numbers divide exactly and dividing by zero is a missing value, so the comparison is false. In the libraries `12 / 8` is `1`, as in C#, and a zero divisor throws. Decide which your rule authors expect.
+- **`?.` in DynamicExpresso guards one step, not the rest of the chain.** `Order.Previous?.Customer.Tier` still throws when `Previous` is null, where C# would stop. Write `?.` at every step.
+- **Dynamic.Core refuses `ToString()` unless `AllowEqualsAndToStringMethodsOnObject` is set**, and without it there is no way to compare an enum with text that is not a literal.
+- **Two JSON values are equal in the sample when they are the same JSON**: the number `7` is not equal to a missing value. The helper spelling asks "are both the same string", so a number and a missing value both read as null and compare equal. Neither is wrong; they are different questions.
+- **A missing value on both sides is equal**, in every engine: `null == null`. If a rule means "both are there and equal", add `&& Order.Previous != null`.
+
+**Checking one order** (average of the full and the other order):
+
+| | Two strings, deep paths | `int` and `decimal` | Enum and string | JSON and string property | JSON and number property | Two JSON numbers | Arithmetic both sides | `min` and `max` | Arithmetic with JSON |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Lambda written in C# | 1.5 ns | 4.1 ns | 16 ns, 24 B | 88 ns, 144 B | 86 ns, 32 B | 222 ns, 144 B | 23 ns | 1.6 ns | 90 ns, 32 B |
+| DynamicExpresso | 2.2 ns | 4.1 ns | 20 ns, 24 B | 88 ns, 144 B | 86 ns, 32 B | 217 ns, 144 B | 26 ns | 1.7 ns | 94 ns, 32 B |
+| System.Linq.Dynamic.Core | 2.8 ns | 4.1 ns | 19 ns, 24 B | 89 ns, 144 B | 85 ns, 32 B | 219 ns, 144 B | 26 ns | 1.8 ns | 95 ns, 32 B |
+| RebolParse rules sample | 2.0 ns | 5.7 ns | 22 ns, 24 B | 55 ns, 32 B | 72 ns | 145 ns | 27 ns | 3.7 ns | 76 ns |
+| RebolParse rules sample + FastExpressionCompiler | 2.2 ns | 6.8 ns | 22 ns, 24 B | 55 ns, 32 B | 72 ns | 144 ns | declined | 5.1 ns | declined |
+
+- **On plain properties it is a tie**, within a nanosecond or two. The sample is 1.4 times slower comparing an `int` with a `decimal` and 2 times slower on `min` and `max` (3.7 against 1.7 ns), because a list item is an `int?` there and goes through a null-aware `min`.
+- **Arithmetic costs the same everywhere**: 26 to 27 ns for five decimal operations, which is the price of `decimal`.
+- **With JSON on a side the sample is 1.2 to 1.6 times faster** and allocates little or nothing, as it reads JSON directly where the libraries go through the helper.
+- **An enum against a string property allocates 24 bytes in every engine**, the sample included: the enum has to be turned into its name.
+- **FastExpressionCompiler declines rules that calculate with `decimal?` values**, returning nothing so the caller can fall back to .NET's compiler. If you use it, keep that fallback.
 
 ### Stress run: 20,000 orders
 
@@ -296,7 +341,7 @@ Rule text from users is code, so what it can reach matters as much as how fast i
 | Rule text | Sample | DynamicExpresso, default | DynamicExpresso, locked down | Dynamic.Core, default or with JSON types registered |
 |---|---|---|---|---|
 | Comparisons, `&&`, `\|\|`, `!`, brackets | yes | yes | yes | yes |
-| Arithmetic: `Order.Id + 1 > 2` | no | yes | yes | yes |
+| Arithmetic: `Order.Id + 1 > 2` | yes | yes | yes | yes |
 | Method on a value: `Order.Customer.Name.ToUpper() == "ADA"` | no | yes | yes | yes |
 | Method that changes the object: `Order.Tags.Remove("channel")` | no | **yes** | **yes** | no (see below) |
 | Assignment: `(Order.Customer = null) == null` | no | **yes** | no | reads `=` as "equals" |
@@ -311,7 +356,7 @@ Rule text from users is code, so what it can reach matters as much as how fast i
 - **Dynamic.Core refused `Tags.Remove` here by accident, not by policy**: the error is an ambiguous overload. Do not read that row as a guarantee about mutating methods; treat any type you register as fully callable.
 - **Every type you register widens the surface.** Registering `JsonDocument` and `JsonElement` to make JSON rules work makes all their methods callable. A helper class with three static methods is a narrower thing to expose.
 - **Neither limits work.** `Order.Customer.Name.PadLeft(2000000000)` is an ordinary string method that allocates 4 GB. If authors are not trusted, also bound rule length and run with a timeout.
-- **The sample allows only what its grammar has**: comparisons, `&&`, `||`, `!`, brackets, and reads of public properties, fields, list positions, dictionary keys and JSON. No arithmetic and no calls, so there is nothing to lock down. A property getter does run when it is read.
+- **The sample allows only what its grammar has**: comparisons, `&&`, `||`, `!`, brackets, `+ - * /`, `min(...)`, `max(...)`, and reads of public properties, fields, list positions, dictionary keys and JSON. `min` and `max` are words in the grammar, not calls into .NET, so there is no method a rule can name and nothing to lock down. A property getter does run when it is read.
 
 ## Run it
 
@@ -320,6 +365,7 @@ dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*StripDigits*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*JsonLookup*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRule*" --job short
+dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRuleBothSides*" "*ObjectRuleArithmetic*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRuleStress*" --job short   # 20,000 orders
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- safety        # what each library lets rule text call
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- scenarios     # the deep-object and JSON table, with every rule text
