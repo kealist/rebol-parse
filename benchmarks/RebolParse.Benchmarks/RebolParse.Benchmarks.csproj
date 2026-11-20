@@ -10,6 +10,10 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageReference Include="DynamicExpresso.Core" Version="2.19.6" />
+    <PackageReference Include="FastExpressionCompiler" Version="6.0.0" />
+    <PackageReference Include="RulesEngine" Version="6.0.1" />
+    <PackageReference Include="System.Linq.Dynamic.Core" Version="1.7.4" />
   </ItemGroup>
 
   <ItemGroup>

@@ -113,12 +113,44 @@ Bytes allocated per call. Reading the first 3 records allocates about the same a
 - **Building objects is a minor cost.** The full read allocates 179 MB for the 11 MB document and the skip rules 1.5 KB, but the skip rule is only about 2-3x faster, so most of the time is matching, not allocation.
 - **For ordinary JSON, use `System.Text.Json`.** The sample shows that a grammar is a few lines and gives precise errors, not that it competes with a dedicated reader.
 
+## Object rules: the rules sample vs expression libraries
+
+The [`rules` sample](../samples/Samples/RuleDemo.cs) turns text like `Person.Age > 18 && Person.Job == "SE"` into a `Func<Person, bool>`. Here it is against a lambda written in C#, [DynamicExpresso](https://github.com/dynamicexpresso/DynamicExpresso) 2.19.6, [System.Linq.Dynamic.Core](https://github.com/zzzprojects/System.Linq.Dynamic.Core) 1.7.4 (compiled by .NET, and by [FastExpressionCompiler](https://github.com/dadhi/FastExpressionCompiler) 6.0.0) and Microsoft's [RulesEngine](https://github.com/microsoft/RulesEngine) 6.0.1. Every library reads the same rule text. **Simple** is the rule above. **Nested** is `Person.Age >= 18 && (Person.Job == "PM" || Person.Address.City == "London") && Person.Salary > 50000`.
+
+**Checking one object** with a rule that is already compiled. Nothing allocates unless a figure is given.
+
+| | Simple | Nested |
+|---|---:|---:|
+| Lambda written in C# | 0.3 ns | 3.1 ns |
+| System.Linq.Dynamic.Core | 0.4 ns | 3.1 ns |
+| DynamicExpresso, typed delegate | 0.4 ns | 3.5 ns |
+| System.Linq.Dynamic.Core + FastExpressionCompiler | 0.6 ns | 3.9 ns |
+| RebolParse rules sample | 0.9 ns | 3.9 ns |
+| DynamicExpresso, `Lambda.Invoke` | 308 ns, 784 B | 312 ns, 784 B |
+| RulesEngine | 474 ns, 1.6 KB | 476 ns, 1.6 KB |
+
+**Compiling a rule** from text, the cost paid once per rule.
+
+| | Simple | Nested | Allocated (Simple, Nested) |
+|---|---:|---:|---:|
+| System.Linq.Dynamic.Core + FastExpressionCompiler | 15 µs | 71 µs | 25 KB, 139 KB |
+| RebolParse rules sample | 66 µs | 221 µs | 7 KB, 12 KB |
+| System.Linq.Dynamic.Core | 73 µs | 269 µs | 24 KB, 131 KB |
+| DynamicExpresso | 95 µs | 265 µs | 55 KB, 90 KB |
+| RulesEngine (build an engine and run it once) | 2,504 µs | 2,753 µs | 217 KB, 333 KB |
+
+- **Once compiled, they all cost the same as C#.** Every one of them ends in a JIT-compiled delegate, so a check is a few nanoseconds. Figures under 1 ns are at the limit of what can be measured, and the differences between the first five rows are not meaningful. The sample's extra half nanosecond is the wrapper that refuses a null object.
+- **Call the typed delegate.** `Lambda.Invoke` boxes its arguments and calls dynamically, which is about 100 times slower on the nested rule. RulesEngine builds a result tree for every check, which costs about the same.
+- **Compiling is 10,000 times dearer than checking, so cache the delegate.** Most of the compile time is .NET turning the expression tree into IL, which is why FastExpressionCompiler cuts it by 4 to 5 times and why three different parsers land close together.
+- **Use a library unless you need the narrow surface.** The sample is competitive but does less: no method calls, no arithmetic. That is the point of it when rule authors are not trusted, and a limit otherwise.
+
 ## Run it
 
 ```bash
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*"
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*StripDigits*" --job short
 dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*JsonLookup*" --job short
+dotnet run -c Release --project benchmarks/RebolParse.Benchmarks -- --filter "*ObjectRule*" --job short
 ```
 
 Drop `--job short` for a precise run; the full job takes several times longer. The 11 MB JSON cases take a few minutes.
