@@ -125,8 +125,8 @@ The [`rules` sample](../samples/Samples/RuleDemo.cs) turns text like `Person.Age
 | System.Linq.Dynamic.Core | 0.4 ns | 3.1 ns |
 | DynamicExpresso, typed delegate | 0.4 ns | 3.5 ns |
 | System.Linq.Dynamic.Core + FastExpressionCompiler | 0.6 ns | 3.9 ns |
-| RebolParse rules sample | 0.8 ns | 3.9 ns |
-| RebolParse rules sample + FastExpressionCompiler | 0.6 ns | 4.2 ns |
+| RebolParse rules sample | 0.9 ns | 3.1 ns |
+| RebolParse rules sample + FastExpressionCompiler | 0.6 ns | 3.5 ns |
 | DynamicExpresso, `Lambda.Invoke` | 308 ns, 784 B | 312 ns, 784 B |
 | RulesEngine | 474 ns, 1.6 KB | 476 ns, 1.6 KB |
 
@@ -159,8 +159,8 @@ The two rules above are small and were checked against one person who passes. Th
 | System.Linq.Dynamic.Core | 1.9 ns | 3.9 ns | 6.4 ns | 13.6 ns |
 | DynamicExpresso | 1.9 ns | 3.9 ns | 6.4 ns | 13.7 ns |
 | System.Linq.Dynamic.Core + FastExpressionCompiler | 2.2 ns | 4.4 ns | 7.0 ns | 16.3 ns |
-| RebolParse rules sample | 1.9 ns | 4.1 ns | 7.9 ns | 18.8 ns |
-| RebolParse rules sample + FastExpressionCompiler | 2.2 ns | 4.6 ns | 9.6 ns | 23.2 ns |
+| RebolParse rules sample | 1.6 ns | 3.9 ns | 6.6 ns | 14.1 ns |
+| RebolParse rules sample + FastExpressionCompiler | 2.2 ns | 4.4 ns | 8.1 ns | 20.4 ns |
 
 **Compiling** one rule from text.
 
@@ -174,8 +174,8 @@ The two rules above are small and were checked against one person who passes. Th
 | DynamicExpresso | 49 µs | 274 µs | 843 µs | 3,704 µs |
 
 - **The compile-time result holds at every size.** With FastExpressionCompiler the sample is 7 to 23 times faster than with .NET's compiler, and 2.6 to 5.7 times faster than Dynamic.Core with the same compiler. With .NET's compiler all three cost the same, 3 to 4 ms for a 64-comparison rule.
-- **The per-check result does not.** On small rules everything ties. On large ones the two libraries are about 1.4 times faster than the sample (13.6 against 18.8 ns at 64 comparisons). The likely cause is the sample's null-safe paths: `Person.Address.Zip` becomes an `int?` behind a null check where the libraries read the field directly and would throw on a null address. That was not measured separately.
-- **FastExpressionCompiler's code is 10 to 25% slower to run** than .NET's on these rules, for both parsers. It trades a little speed per check for a much faster compile, which pays when rules are compiled often or there are thousands of them, and loses when a few rules check millions of objects.
+- **Per check they tie at every size too**: 14.1 ns for the sample against 13.5 for the libraries at 64 comparisons. An earlier version of the sample was 1.4 times slower there, because it wrapped a null check around every step of a path. It now collects the checks into one guard, `(a = x.A) != null && (b = a.B) != null ? b.C : null`, which runs about twice as fast.
+- **FastExpressionCompiler's code is 10 to 45% slower to run** than .NET's on these rules, for both parsers. It trades a little speed per check for a much faster compile, which pays when rules are compiled often or there are thousands of them, and loses when a few rules check millions of objects.
 - **The sample allocates far less while compiling**: 127 KB for the 64-comparison rule against 1.1 to 1.6 MB for the libraries.
 
 ### Deeper objects and JSON metadata
@@ -208,17 +208,17 @@ An `Order` with a customer, an employer and its parent company, a list of lines,
 
 | | Guarded deep path | List count, two items | JSON number | JSON nested string | JSON and properties | JSON through a helper |
 |---|---:|---:|---:|---:|---:|---:|
-| Lambda written in C# | 0.9 ns | 1.3 ns | 83 ns, 32 B | 114 ns, 160 B | 110 ns, 112 B | 163 ns, 144 B |
+| Lambda written in C# | 1.0 ns | 1.4 ns | 83 ns, 32 B | 114 ns, 160 B | 110 ns, 112 B | 163 ns, 144 B |
 | DynamicExpresso | 1.8 ns | 1.6 ns | 54 ns | 74 ns, 40 B | 72 ns | 164 ns, 144 B |
 | System.Linq.Dynamic.Core | 1.8 ns | 1.6 ns | 54 ns | 74 ns, 40 B | 72 ns | 169 ns, 144 B |
-| RebolParse rules sample | 4.6 ns | 10.5 ns | 78 ns | 74 ns | 92 ns | 194 ns |
-| RebolParse rules sample + FastExpressionCompiler | 5.5 ns | 13.2 ns | 71 ns | 75 ns | 96 ns | 178 ns |
+| RebolParse rules sample | 1.7 ns | 2.9 ns | 66 ns | 56 ns | 70 ns | 102 ns |
+| RebolParse rules sample + FastExpressionCompiler | 2.1 ns | 4.5 ns | 66 ns | 56 ns | 71 ns | 102 ns |
 
 The C# lambda uses the `MetaJson` helper for JSON, which splits its path on every call; that is why it is slower than the libraries' direct method calls. In the last column the libraries call that helper and the sample uses its own paths.
 
 - **Reading JSON costs 50 to 100 ns whoever does it**, 20 to 50 times a property read, because `JsonDocument` finds a property by scanning the object. If a rule runs millions of times against metadata, copy the fields it needs into real properties first.
-- **The sample is about 1.3 times slower on JSON numbers** (it reads a `decimal`, the libraries an `int` or `double`), **level on strings, and allocates nothing**, since it compares the JSON text in place where `GetString()` makes a string.
-- **Null safety is not free on plain objects.** The sample is 2.5 times slower than the libraries on the guarded deep path and 6.5 times slower on list items, where it goes through `IReadOnlyList<T>` and a `Nullable<int>` and the libraries index the `List<T>` directly. In absolute terms that is 3 to 9 ns a check.
+- **On JSON the sample is level or ahead, and allocates nothing.** It is 1.3 times faster on strings (56 against 74 ns), because it compares the JSON text in place where `GetString()` makes a string, level on the mixed rule, and 1.6 times faster than the libraries calling a helper. It is 1.2 times slower on a lone number (66 against 54 ns), where it reads a `double` and the libraries' rule asks for an `int`. It looks names up by their UTF-8 bytes, encoded once when the rule is compiled.
+- **On plain objects null safety now costs little.** The guarded deep path ties the libraries. List items are 2.9 ns against 1.5: the sample checks the list is there and long enough, and compares `int?` values, where the libraries index it and would throw.
 
 ## Run it
 

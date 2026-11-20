@@ -110,7 +110,9 @@ public sealed class RuleDemo : IDemo
         name ??= typeof(T).Name;
         var tree = Read(text);
         var root = Expression.Parameter(typeof(T), name);
-        return Expression.Lambda<Func<T, bool>>(new Builder(root, name).Condition(tree), root);
+        var builder = new Builder(root, name);
+        var body = builder.Condition(tree);
+        return Expression.Lambda<Func<T, bool>>(builder.Locals.Count == 0 ? body : Expression.Block(builder.Locals, body), root);
     }
 
     private Node Read(string text)
@@ -146,6 +148,19 @@ public sealed class RuleDemo : IDemo
             ["<"] = ExpressionType.LessThan, ["<="] = ExpressionType.LessThanOrEqual,
         };
 
+        /// <summary>
+        /// Variables that hold a value while it is tested for null, so it is read once. They are declared once for the
+        /// whole rule: one flat set of locals runs faster than a block around every step of every path.
+        /// </summary>
+        public List<ParameterExpression> Locals { get; } = [];
+
+        private ParameterExpression Local(Type type)
+        {
+            var local = Expression.Variable(type);
+            Locals.Add(local);
+            return local;
+        }
+
         /// <summary>A node used as true or false: a comparison, or a bool property on its own.</summary>
         public Expression Condition(Node node)
         {
@@ -168,77 +183,99 @@ public sealed class RuleDemo : IDemo
             _ => throw new InvalidOperationException(),
         };
 
+        /// <summary>
+        /// A path, read so that nothing on the way can throw. The checks along the way are collected into one guard
+        /// and the value is read once at the end: <c>(a = x.A) != null &amp;&amp; (b = a.B) != null ? b.C : null</c>.
+        /// One flat guard runs about twice as fast as a null check wrapped around every step.
+        /// </summary>
         private Expression Path(Prop path)
         {
             if ((string)path.Parts[0] != rootName)
                 throw new FormatException($"'{path}' should start with '{rootName}'");
             // the object itself is never null here: the compiled check refuses a null before it runs
             Expression e = Nullable.GetUnderlyingType(root.Type) != null ? Expression.Property(root, "Value") : root;
+            Expression? guard = null;   // what must hold for e to be readable
+
+            void Require(Expression test) => guard = guard == null ? test : Expression.AndAlso(guard, test);
+
+            // The value so far as one expression that is null when the guard fails. Needed before handing it to a helper.
+            Expression Whole()
+            {
+                if (guard == null) return e;
+                var type = CanBeNull(e.Type) ? e.Type : typeof(Nullable<>).MakeGenericType(e.Type);
+                var whole = Expression.Condition(guard, Expression.Convert(e, type), Expression.Default(type));
+                guard = null;
+                return whole;
+            }
+
+            // Hold e in a local, require it to be there, and carry on from the local.
+            Expression Held()
+            {
+                var local = Local(e.Type);
+                var held = Expression.Assign(local, e);
+                if (!e.Type.IsValueType) { Require(Expression.ReferenceNotEqual(held, Expression.Constant(null, e.Type))); return local; }
+                Require(Expression.Property(held, "HasValue"));   // a Nullable<T>
+                return Expression.Call(local, e.Type.GetMethod("GetValueOrDefault", Type.EmptyTypes)!);
+            }
+
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance;
             for (var i = 1; i < path.Parts.Count; i++)
             {
-                if (IsJson(e.Type))   // inside JSON every step is a lookup at run time
+                var part = path.Parts[i];
+                if (IsJson(e.Type))   // inside JSON every step is a lookup at run time, and the helpers take null
                 {
-                    e = path.Parts[i] is int at
-                        ? Expression.Call(Json.At, e, Expression.Constant(at))
-                        : Expression.Call(Json.Get, e, Expression.Constant(path.Parts[i] is Key key ? key.Name : (string)path.Parts[i]));
+                    e = part is int position
+                        ? Expression.Call(Json.At, e, Expression.Constant(position))
+                        : Expression.Call(Json.Get, e, Utf8(part is Key name ? name.Name : (string)part));
                     continue;
                 }
-                e = path.Parts[i] switch
+
+                if (part is int at)
                 {
-                    int at => Item(e, at, path),
-                    Key key => Lookup(e, key.Name, path),
-                    var name => Access(e, (string)name, nullSafe: i > 1),
-                };
+                    // an array, or a class with its own Count and [int] such as List<T>, is read directly
+                    var count = e.Type.GetProperty("Count", flags);
+                    var indexer = e.Type.GetProperty("Item", flags, null, null, [typeof(int)], null);
+                    if (e.Type.IsArray || (!e.Type.IsValueType && count?.PropertyType == typeof(int) && indexer != null))
+                    {
+                        var list = Held();
+                        Require(Expression.GreaterThan(e.Type.IsArray ? Expression.ArrayLength(list) : Expression.Property(list, count!), Expression.Constant(at)));
+                        e = e.Type.IsArray ? Expression.ArrayIndex(list, Expression.Constant(at)) : Expression.Property(list, indexer!, Expression.Constant(at));
+                    }
+                    else   // any other list goes through its interface
+                    {
+                        var type = Implements(e.Type, typeof(IReadOnlyList<>))
+                                   ?? throw new FormatException($"'{path}': {Show(e.Type)} is not a list, so it has no [{at}]");
+                        e = Expression.Call(Items.Method("At", type.GetGenericArguments()[0]), Whole(), Expression.Constant(at));
+                    }
+                }
+                else if (part is Key key)
+                {
+                    var type = Implements(e.Type, typeof(IReadOnlyDictionary<,>));
+                    if (type == null || type.GetGenericArguments()[0] != typeof(string))
+                        throw new FormatException($"'{path}': {Show(e.Type)} is not a dictionary with string keys, so it has no [\"{key.Name}\"]");
+                    e = Expression.Call(Items.Method("Get", type.GetGenericArguments()[1]), Whole(), Expression.Constant(key.Name));
+                }
+                else
+                {
+                    var owner = Bare(e.Type);
+                    MemberInfo? member = owner.GetProperty((string)part, flags) is { CanRead: true } property && property.GetIndexParameters().Length == 0
+                        ? property
+                        : owner.GetField((string)part, flags);
+                    if (member == null) throw new FormatException($"{owner.Name} has no public property or field '{part}'");
+                    e = Expression.MakeMemberAccess(i > 1 && CanBeNull(e.Type) ? Held() : e, member);
+                }
+
                 // reaching JSON: from here the value is a JsonElement? that is null when there is nothing there
-                if (e.Type == typeof(JsonDocument)) e = Expression.Call(Json.Root, e);
-                else if (Bare(e.Type) == typeof(JsonElement)) e = Expression.Call(Json.Clean, Expression.Convert(e, typeof(JsonElement?)));
+                if (e.Type == typeof(JsonDocument)) e = Expression.Call(Json.Root, Whole());
+                else if (Bare(e.Type) == typeof(JsonElement)) e = Expression.Call(Json.Clean, Expression.Convert(Whole(), typeof(JsonElement?)));
             }
-            return e;
+            return Whole();
         }
 
-        /// <summary><c>list[2]</c> for an array or list. Past the end is null.</summary>
-        private static Expression Item(Expression list, int at, Prop path)
-        {
-            var type = Implements(list.Type, typeof(IReadOnlyList<>))
-                       ?? throw new FormatException($"'{path}': {Show(list.Type)} is not a list, so it has no [{at}]");
-            return Expression.Call(Items.Method("At", type.GetGenericArguments()[0]), list, Expression.Constant(at));
-        }
-
-        /// <summary><c>tags["channel"]</c> for a dictionary with string keys. A missing key is null.</summary>
-        private static Expression Lookup(Expression dictionary, string key, Prop path)
-        {
-            var type = Implements(dictionary.Type, typeof(IReadOnlyDictionary<,>));
-            if (type == null || type.GetGenericArguments()[0] != typeof(string))
-                throw new FormatException($"'{path}': {Show(dictionary.Type)} is not a dictionary with string keys, so it has no [\"{key}\"]");
-            return Expression.Call(Items.Method("Get", type.GetGenericArguments()[1]), dictionary, Expression.Constant(key));
-        }
+        private static Expression Utf8(string text) => Expression.Constant(System.Text.Encoding.UTF8.GetBytes(text));
 
         private static Type? Implements(Type type, Type generic) =>
             type.GetInterfaces().Append(type).FirstOrDefault(t => t.IsGenericType && t.GetGenericTypeDefinition() == generic);
-
-        /// <summary>Read a public property or field. When the target can be null, so can the result.</summary>
-        private static Expression Access(Expression target, string name, bool nullSafe)
-        {
-            const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance;
-            var owner = Bare(target.Type);
-            MemberInfo? member = owner.GetProperty(name, flags) is { CanRead: true } property && property.GetIndexParameters().Length == 0
-                ? property
-                : owner.GetField(name, flags);
-            if (member == null) throw new FormatException($"{owner.Name} has no public property or field '{name}'");
-            if (!nullSafe || !CanBeNull(target.Type)) return Expression.MakeMemberAccess(target, member);
-
-            // { var t = target; t == null ? null : t.Member }
-            var local = Expression.Variable(target.Type);
-            var isStruct = target.Type.IsValueType;   // a Nullable<T>
-            var access = Expression.MakeMemberAccess(isStruct ? Expression.Property(local, "Value") : local, member);
-            var type = CanBeNull(access.Type) ? access.Type : typeof(Nullable<>).MakeGenericType(access.Type);
-            Expression isNull = isStruct
-                ? Expression.Not(Expression.Property(local, "HasValue"))
-                : Expression.ReferenceEqual(local, Expression.Constant(null, target.Type));
-            return Expression.Block(type, [local],
-                Expression.Assign(local, target),
-                Expression.Condition(isNull, Expression.Default(type), Expression.Convert(access, type)));
-        }
 
         private static Expression Compare(string op, Expression left, Expression right)
         {
@@ -252,15 +289,16 @@ public sealed class RuleDemo : IDemo
                 var equality = op is "==" or "!=";
                 if (IsNullLiteral(other) && equality)
                     return op == "==" ? Expression.Not(Expression.Property(json, "HasValue")) : Expression.Property(json, "HasValue");
-                if (other is ConstantExpression { Value: string } && equality)   // compares the JSON text in place: no string is made
-                    return op == "==" ? Expression.Call(Json.TextIs, json, other) : Expression.Not(Expression.Call(Json.TextIs, json, other));
+                if (other is ConstantExpression { Value: string text } && equality)   // compares the JSON text in place: no string is made
+                    return op == "==" ? Expression.Call(Json.TextIs, json, Utf8(text)) : Expression.Not(Expression.Call(Json.TextIs, json, Utf8(text)));
                 if (!IsNullLiteral(other))
                 {
                     var read = other.Type == typeof(string) ? Json.Text
                         : Bare(other.Type) == typeof(bool) ? Json.Bool
                         : !IsNumber(other.Type) ? throw new FormatException($"a JSON value cannot be compared with {Show(other.Type)}")
-                        : Type.GetTypeCode(Bare(other.Type)) is TypeCode.Single or TypeCode.Double ? Json.Double
-                        : Json.Decimal;
+                        // exact against a decimal property; otherwise a double, which is quicker to read and exact for whole numbers to 2^53
+                        : Bare(other.Type) == typeof(decimal) && other is not ConstantExpression ? Json.Decimal
+                        : Json.Double;
                     json = Expression.Call(read, json);
                     (left, right) = jsonFirst ? (json, other) : (other, json);
                 }
@@ -342,11 +380,12 @@ public sealed class RuleDemo : IDemo
         public static JsonElement? RootOf(JsonDocument? document) => document == null ? null : CleanOf(document.RootElement);
         /// <summary>JSON null, and a JsonElement that was never set, count as nothing.</summary>
         public static JsonElement? CleanOf(JsonElement? e) => e is { ValueKind: not (JsonValueKind.Null or JsonValueKind.Undefined) } ? e : null;
-        public static JsonElement? GetOf(JsonElement? e, string name) =>
+        /// <summary>Names and text arrive as UTF-8, encoded once when the rule is compiled, because that is what JSON is stored as.</summary>
+        public static JsonElement? GetOf(JsonElement? e, byte[] name) =>
             e is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty(name, out var value) ? CleanOf(value) : null;
         public static JsonElement? AtOf(JsonElement? e, int at) =>
             e is { ValueKind: JsonValueKind.Array } a && at < a.GetArrayLength() ? CleanOf(a[at]) : null;
-        public static bool TextIsOf(JsonElement? e, string text) => e is { ValueKind: JsonValueKind.String } s && s.ValueEquals(text);
+        public static bool TextIsOf(JsonElement? e, byte[] text) => e is { ValueKind: JsonValueKind.String } s && s.ValueEquals(text);
         public static string? TextOf(JsonElement? e) => e is { ValueKind: JsonValueKind.String } s ? s.GetString() : null;
         public static bool? BoolOf(JsonElement? e) => e?.ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null };
         public static decimal? DecimalOf(JsonElement? e) => e is { ValueKind: JsonValueKind.Number } n && n.TryGetDecimal(out var value) ? value : null;
